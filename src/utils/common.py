@@ -3,29 +3,151 @@
 
 """
 This file is part of Commix Project (https://commixproject.com).
-Copyright (c) 2014-2021 Anastasios Stasinopoulos (@ancst).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
- 
+
 For more see the file 'readme/COPYING' for copying permission.
 """
 
 import re
 import os
 import sys
+import platform
 import json
 import time
-import base64
 import hashlib
 import traceback
-from src.utils import menu
+from src.core.parse import cmdline as menu
 from src.utils import settings
 from src.thirdparty import six
 from src.thirdparty.six.moves import input as _input
 from src.thirdparty.six.moves import urllib as _urllib
+from src.thirdparty.six.moves import http_client as _http_client
+
+"""
+Invalid cmd output
+"""
+def invalid_cmd_output(cmd):
+  err_msg = "Execution of the '" + cmd + "' command did not return any output."
+  return err_msg
+
+"""
+Invalid option msg
+"""
+def invalid_option(option):
+  err_msg = "'" + option + "' is not a valid answer."
+  settings.print_data_to_stdout(settings.print_error_msg(err_msg))
+
+"""
+Prompt Y/N/quit and store the boolean choice into the given settings attribute.
+"""
+def prompt_yes_no_setting(message, setting_name, default="N"):
+  while True:
+    choice = read_input(message, default=default, check_batch=True)
+    if choice in settings.CHOICE_YES:
+      setattr(settings, setting_name, True)
+      return
+    elif choice in settings.CHOICE_NO:
+      setattr(settings, setting_name, False)
+      return
+    elif choice in settings.CHOICE_QUIT:
+      raise SystemExit()
+    else:
+      invalid_option(choice)
+
+"""
+Reads input from terminal safely
+"""
+def safe_input(message):
+  try:
+    try:
+      value = _input(message)
+    except UnicodeDecodeError:
+      value = _input(message.encode("utf-8", "ignore").decode("utf-8"))
+    except EOFError:
+      raise
+    except Exception as err_msg:
+      settings.print_data_to_stdout(settings.print_error_msg(err_msg))
+      return ""
+  finally:
+    settings.reset_terminal_style()
+  # A terminal echoes the user's Enter, starting a fresh line; a pipe does not, so the
+  # prompt line is still open and the next message has to break it itself.
+  try:
+    settings.PROGRESS_LINE_OPEN = not sys.stdin.isatty()
+  except Exception:
+    settings.PROGRESS_LINE_OPEN = False
+  return value
+
+"""
+Reads input from terminal
+"""
+def read_input(message, default=None, check_batch=True):
+  # Close the spinner line before prompting unless the message is empty.
+  if message:
+    settings.print_data_to_stdout(settings.SINGLE_WHITESPACE)
+  # Read one answer, falling back to the default where the line was left empty.
+  def is_empty():
+    value = safe_input(settings.input_message(message))
+    if len(value) == 0:
+      settings.echo_default_answer(message, default)
+      return default
+    else:
+      return value
+  try:
+    value = None
+    if settings.END_LINE.LF in message:
+      message += (settings.END_LINE.LF if message.count(settings.END_LINE.LF) > 1 else "")
+    elif len(message) == 0:
+      return is_empty()
+    elif not message.rstrip().endswith((']', '>')):
+      # A free-text answer prompt - not a '[Y/n]'-style one, and not already ending in its own
+      # '>' - marked the same way every one of them now is, so where to actually type is never
+      # in doubt.
+      message = message.rstrip() + " > "
+    # Nothing in there names a question, so a run given that is answered the way a run given none
+    # is - read as a prompt of its own, it left '--batch' unconsulted and every question waiting on
+    # somebody to type, which under automation is a run that ends on the first one.
+    if settings.ANSWERS and any(_ in settings.ANSWERS for _ in ",="):
+      for item in settings.ANSWERS.split(','):
+        # Split once: an answer is free to hold "=" of its own, a URL with a query string most
+        # of all, and splitting on every one of them handed back the answer cut at the first.
+        question = item.split('=', 1)[0].strip()
+        answer = item.split('=', 1)[1] if '=' in item else None
+        if answer and question.lower() in message.lower():
+          value = answer
+          settings.print_data_to_stdout(settings.print_message(message + str(value)))
+          return value
+    if value:
+      if settings.VERBOSITY_LEVEL != 0:
+        debug_msg = "Used the given answer."
+        settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+      settings.print_data_to_stdout(settings.print_message(message + str(value)))
+      return value
+    elif value is None:
+      if check_batch and menu.options.batch:
+        settings.print_data_to_stdout(settings.print_message(message + str(default)))
+        return default
+      else:
+        return is_empty()
+  except KeyboardInterrupt:
+    settings.clear_current_line()
+    raise
+
+"""
+Extract regex result
+"""
+def extract_regex_result(regex, content):
+  result = None
+  if regex and content and "?P<result>" in regex:
+    match = re.search(regex, content)
+    if match:
+      result = match.group("result")
+  return result
 
 """
 Returns True if the current process is run under admin privileges
@@ -33,19 +155,19 @@ Returns True if the current process is run under admin privileges
 def running_as_admin():
   is_admin = False
   if settings.PLATFORM in ("posix", "mac"):
-    _ = os.geteuid()
-    if isinstance(_, (float, six.integer_types)) and _ == 0:
-      is_admin = True  
+    euid = os.geteuid()
+    if isinstance(euid, (float, six.integer_types)) and euid == 0:
+      is_admin = True
 
   elif settings.IS_WINDOWS:
     import ctypes
-    _ = ctypes.windll.shell32.IsUserAnAdmin()
-    if isinstance(_, (float, six.integer_types)) and _ == 1:
+    elevated = ctypes.windll.shell32.IsUserAnAdmin()
+    if isinstance(elevated, (float, six.integer_types)) and elevated == 1:
       is_admin = True
   else:
     err_msg = settings.APPLICATION + " is not able to check if you are running it "
     err_msg += "as an administrator account on this platform. "
-    print(settings.print_error_msg(err_msg))
+    settings.print_data_to_stdout(settings.print_error_msg(err_msg))
     is_admin = True
 
   return is_admin
@@ -54,102 +176,175 @@ def running_as_admin():
 Get total number of days from last update
 """
 def days_from_last_update():
-  days_from_last_update = int(time.time() - os.path.getmtime(settings.SETTINGS_PATH)) // (3600 * 24)
+  try:
+    days_from_last_update = int(time.time() - os.path.getmtime(settings.SETTINGS_PATH)) // (3600 * 24)
+  except OSError:
+    return
   if days_from_last_update > settings.NAGGING_DAYS:
-    warn_msg = "You haven't updated " + settings.APPLICATION + " for more than "
-    warn_msg += str(days_from_last_update) + " day"
-    warn_msg += "s"[days_from_last_update == 1:] + "!"
-    print(settings.print_warning_msg(warn_msg))
+    warn_msg = "Last update " + str(days_from_last_update) + " days ago. Consider checking for updates."
+    settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
 
 """
-Automatically create a Github issue with unhandled exception information.
-PS: Greetz @ sqlmap dev team for that great idea! :)
+Shows all HTTP error codes raised, each with the number of times it came back.
 """
-def create_github_issue(err_msg, exc_msg):
-  _ = re.sub(r"'[^']+'", "''", exc_msg)
-  _ = re.sub(r"\s+line \d+", "", _)
-  _ = re.sub(r'File ".+?/(\w+\.py)', r"\g<1>", _)
-  _ = re.sub(r".+\Z", "", _)
-  _ = re.sub(r"(Unicode[^:]*Error:).+", r"\g<1>", _)
-  _ = re.sub(r"= _", "= ", _)
-  _ = _.encode(settings.DEFAULT_CODEC)
-  
-  bug_report =  "Bug Report: Unhandled exception \"" + str([i for i in exc_msg.split('\n') if i][-1]) + "\""
-
-  while True:
-    try:
-      if not menu.options.batch:
-        question_msg = "Do you want to automatically create a new (anonymized) issue "
-        question_msg += "with the unhandled exception information at "
-        question_msg += "the official Github repository? [y/N] "
-        choise = _input(settings.print_question_msg(question_msg))
-      else:
-        choise = ""
-      if len(choise) == 0:
-        choise = "n"
-      if choise in settings.CHOICE_YES:
-        break
-      elif choise in settings.CHOICE_NO:
-        print(settings.SINGLE_WHITESPACE)
-        return
-      else:
-        err_msg = "'" + choise + "' is not a valid answer."  
-        print(settings.print_error_msg(err_msg))
-        pass
-    except: 
-      print("\n")
-      raise SystemExit()
-
-  err_msg = err_msg[err_msg.find("\n"):]
-  request = _urllib.request.Request(url="https://api.github.com/search/issues?q=" + \
-        _urllib.parse.quote("repo:commixproject/commix" + " " + str(bug_report))
-        )
-
-  try:
-    content = _urllib.request.urlopen(request, timeout=settings.TIMEOUT).read()
-    _ = json.loads(content)
-    duplicate = _["total_count"] > 0
-    closed = duplicate and _["items"][0]["state"] == "closed"
-    if duplicate:
-      warn_msg = "That issue seems to be already reported"
-      if closed:
-          warn_msg += " and resolved. Please update to the latest "
-          warn_msg += "(dev) version from official GitHub repository at '" + settings.GIT_URL + "'"
-      warn_msg += ".\n"   
-      print(settings.print_warning_msg(warn_msg))
-      return
-  except:
-    pass
-
-  data = {"title": str(bug_report), "body": "```" + str(err_msg) + "\n```\n```\n" + str(exc_msg) + "```"}
-  request = _urllib.request.Request(url = "https://api.github.com/repos/commixproject/commix/issues", 
-                                data = json.dumps(data).encode(), 
-                                headers = {"Authorization": "token " + base64.b64decode(settings.GITHUB_REPORT_OAUTH_TOKEN.encode(settings.DEFAULT_CODEC)).decode()}
-                                )
-  try:
-    content = _urllib.request.urlopen(request, timeout=settings.TIMEOUT).read()
-  except Exception as err:
-    content = None
-
-  issue_url = re.search(r"https://github.com/commixproject/commix/issues/\d+", content.decode(settings.DEFAULT_CODEC) or "")
-  if issue_url:
-    info_msg = "The created Github issue can been found at the address '" + str(issue_url.group(0)) + "'.\n"
-    print(settings.print_info_msg(info_msg))
-  else:
-    warn_msg = "Something went wrong while creating a Github issue."
-    if settings.UNAUTHORIZED_ERROR in str(err):
-      warn_msg += " Please update to the latest revision.\n"
-    print(settings.print_warning_msg(warn_msg))
+def show_http_error_codes():
+  if not settings.HTTP_ERROR_CODES_SUM or settings.VERBOSITY_LEVEL == 0:
+    return
+  counted = {}
+  for code in settings.HTTP_ERROR_CODES_SUM:
+    counted[str(code)] = counted.get(str(code), 0) + 1
+  described = []
+  # Most frequent first, so the one that shaped the run is read first.
+  for code in sorted(counted, key=lambda item: (-counted[item], item)):
+    reason = _http_client.responses.get(int(code)) if code.isdigit() else None
+    times = counted[code]
+    described.append(code + (" (" + reason + ")" if reason else "") +
+                     " - " + str(times) + " time" + "s"[times == 1:])
+  debug_msg = "HTTP error code" + "s"[len(counted) == 1:] + " detected during run: "
+  debug_msg += ", ".join(described) + "."
+  settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
 
 """
 Masks sensitive data in the supplied message.
 """
 def mask_sensitive_data(err_msg):
+  """
+  What each option was given, masked wherever it turns up - not only where it follows the option's
+  own name. A value reaches a message through more than the command line: a stack trace quoting it,
+  a URL rebuilt around it, a path printed by something else.
+  """
+  for option in settings.SENSITIVE_VALUE_OPTIONS:
+    value = getattr(menu.options, option, None)
+    if not value or not isinstance(value, str) or len(value) < 3:
+      continue
+    err_msg = err_msg.replace(value, "<sanitized>")
+
+  # The home directory carries the account's own name, whoever printed the path.
+  err_msg = re.sub(r"(?i)([A-Za-z]:[\\/]+Users[\\/]+|[\\/]+home[\\/]+)([^\\/\s]+)",
+                   lambda match: match.group(1) + "<sanitized>", err_msg)
+
   for item in settings.SENSITIVE_OPTIONS:
-    match = re.search(r"(?i)commix.+("+str(item)+")(\s+|=)([^ ]+)", err_msg)
-    if match:
-      err_msg = err_msg.replace(match.group(3), '*' * len(match.group(3)))
+    """
+    The whole value goes, not the part of it before a hyphen.
+
+    A value was matched with '[^-]+', so 'p-ssw0rd' was masked as far as its first hyphen and the
+    rest of it was reported verbatim. The option's own name is escaped for the same reason: it is a
+    literal here, and its hyphens are not a range. Quoted values are taken whole, spaces and all.
+    """
+    pattern = r"(?i)(?<![\w-])(" + re.escape(str(item)) + r")(\s+|=)(\"[^\"]*\"|'[^']*'|\S+)"
+    err_msg = re.sub(pattern, lambda match: match.group(1) + match.group(2) + "<sanitized>", err_msg)
   return err_msg
+
+"""
+Print a user-friendly message with a URL for reporting an issue.
+"""
+def print_report_issue(url, prepared):
+  if prepared:
+    msg = ("Sanitized GitHub issue has been generated. Submit it at: " + url)
+    settings.print_data_to_stdout(settings.print_info_msg(msg))
+  else:
+    msg = ("Sanitized GitHub issue generation skipped. Report it manually at: " + url)
+    settings.print_data_to_stdout(settings.print_warning_msg(msg))
+
+"""
+Create a Github issue with unhandled exception information.
+PS: Greetz @ sqlmap dev team for that great idea! :)
+"""
+def create_github_issue(err_msg, exc_msg):
+
+  # Normalize exception message to generate a stable fingerprint
+  fingerprint = re.sub(r"'[^']+'", "''", exc_msg)
+  fingerprint = re.sub(r"\s+line \d+", "", fingerprint)
+  fingerprint = re.sub(r'File ".+?/(\w+\.py)', r"\g<1>", fingerprint)
+  fingerprint = re.sub(r".+\Z", "", fingerprint)
+  fingerprint = re.sub(r"(Unicode[^:]*Error:).+", r"\g<1>", fingerprint)
+  fingerprint = re.sub(r"= _", "= ", fingerprint)
+  fingerprint = fingerprint.encode(settings.DEFAULT_CODEC)
+
+  # Generate short hash used as issue identifier
+  key = hashlib.md5(fingerprint).hexdigest()[:8]
+
+  # Build GitHub issue title using the last non-empty exception line
+  bug_report = (
+    "Bug Report: Unhandled exception \""
+    + str([i for i in exc_msg.split(settings.END_LINE.LF) if i][-1])
+    + "\" (#" + key + ")"
+  )
+
+  """
+  Nothing leaves the machine until the user has said it may.
+
+  Asking GitHub whether this crash is already known is itself a request to a third party, and the
+  question used to carry the exception's own last line - which is where a path, a target or a
+  credential ends up. So consent comes first, and the question is asked with the fingerprint alone.
+  """
+  while True:
+    try:
+      message = "Do you want to generate a sanitized GitHub issue report? [Y/n] "
+      choise = read_input(message, default="Y", check_batch=True)
+      if choise in settings.CHOICE_YES:
+        # Mask any potentially sensitive data before submission
+        err_msg = mask_sensitive_data(err_msg)
+        exc_msg = mask_sensitive_data(exc_msg)
+        break
+      elif choise in settings.CHOICE_NO:
+        print_report_issue(settings.ISSUES_PAGE, prepared=False)
+        return
+      else:
+        invalid_option(choise)
+    except (KeyboardInterrupt, EOFError):
+      settings.print_data_to_stdout("")
+      raise SystemExit()
+
+  request = _urllib.request.Request(
+    url="https://api.github.com/search/issues?q=" +
+    _urllib.parse.quote(
+      "repo:commixproject/commix"
+      + settings.SINGLE_WHITESPACE
+      + "Unhandled exception (#" + key + ")"
+    )
+  )
+
+  try:
+    response = _urllib.request.urlopen(request, timeout=settings.TIMEOUT, context=settings.verified_context())
+    content = response.read()
+    response.close()
+    results = json.loads(content)
+
+    duplicate = results["total_count"] > 0
+    closed = duplicate and results["items"][0]["state"] == "closed"
+
+    if duplicate:
+      info_msg = "That issue seems to be already reported"
+      if closed:
+        info_msg += " and resolved. Please update to the latest "
+        info_msg += "(dev) version from the official GitHub repository at '"
+        info_msg += settings.GIT_URL + "'"
+      info_msg += "."
+      settings.print_data_to_stdout(settings.print_bold_info_msg(info_msg))
+      return
+  except (KeyboardInterrupt, SystemExit):
+    raise
+  except Exception:
+    # A GitHub that cannot be reached is no reason not to prepare the report.
+    pass
+
+  # Trim banner/output lines before the actual error content
+  err_msg = err_msg[err_msg.find(settings.END_LINE.LF):]
+
+  # Prepare pre-filled GitHub issue parameters
+  params = {
+    "title": str(bug_report),
+    "body":
+      "**Runtime Information**```" + str(err_msg) + "```" + settings.END_LINE.LF +
+      "**Python Traceback**```" + settings.END_LINE.LF + str(exc_msg) + "```"
+  }
+
+  # Build final GitHub issue URL (prefilled)
+  issue_url = (settings.ISSUES_PAGE + "?" + _urllib.parse.urlencode(params))
+
+  # Inform user that a sanitized issue has been prepared
+  print_report_issue(issue_url, prepared=True)
 
 """
 Returns detailed message about occurred unhandled exception.
@@ -161,107 +356,167 @@ def unhandled_exception():
     match = re.search(r"\s*(.+)\s+ValueError", exc_msg)
     err_msg = "Identified corrupted .pyc file(s)."
     err_msg += "Please delete .pyc files on your system to fix the problem."
-    print(settings.print_critical_msg(err_msg)) 
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "must be pinned buffer, not bytearray" in exc_msg:
-    err_msg = "Error occurred at Python interpreter which "
-    err_msg += "is fixed in 2.7.x. Please update accordingly. "
+    err_msg = "Error occurred at Python interpreter. "
+    err_msg += "Python 2.7.x fixes this. Please update accordingly. "
     err_msg += "(Reference: https://bugs.python.org/issue8104)"
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif any(_ in exc_msg for _ in ("MemoryError", "Cannot allocate memory")):
     err_msg = "Memory exhaustion detected."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "Permission denied: '" in exc_msg:
     match = re.search(r"Permission denied: '([^']*)", exc_msg)
     err_msg = "Permission error occurred while accessing file '" + match.group(1) + "'."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif all(_ in exc_msg for _ in ("Access is denied", "subprocess", "metasploit")):
     err_msg = "Permission error occurred while running Metasploit."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif all(_ in exc_msg for _ in ("Permission denied", "metasploit")):
     err_msg = "Permission error occurred while using Metasploit."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "Invalid argument" in exc_msg:
     err_msg = "Corrupted installation detected. "
-    err_msg += "You should retrieve the latest (dev) version from official GitHub "
+    err_msg += "You should retrieve the latest (dev) version from the official GitHub "
     err_msg += "repository at '" + settings.GIT_URL + "'."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  elif "database disk image is malformed" in exc_msg:
+    err_msg = "Local session file seems to be malformed. Please re-run with '--flush-session'."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif all(_ in exc_msg for _ in ("No such file", "_'")):
-    err_msg = "Corrupted installation detected ('" + exc_msg.strip().split('\n')[-1] + "'). " 
-    err_msg += "You should retrieve the latest (dev) version from official GitHub "
+    err_msg = "Corrupted installation detected ('" + exc_msg.strip().split(settings.END_LINE.LF)[-1] + "'). "
+    err_msg += "You should retrieve the latest (dev) version from the official GitHub "
     err_msg += "repository at '" + settings.GIT_URL + "'."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "Invalid IPv6 URL" in exc_msg:
-    err_msg = "invalid URL ('" + exc_msg.strip().split('\n')[-1] + "')"
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    err_msg = "Invalid URL ('" + exc_msg.strip().split(settings.END_LINE.LF)[-1] + "')"
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif any(_ in exc_msg for _ in ("Broken pipe",)):
-    raise SystemExit()
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif any(_ in exc_msg for _ in ("The paging file is too small",)):
     err_msg = "No space left for paging file."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif all(_ in exc_msg for _ in ("SyntaxError: Non-ASCII character", ".py on line", "but no encoding declared")) or \
        any(_ in exc_msg for _ in ("source code string cannot contain null bytes", "No module named")) or \
-       any(_ in exc_msg for _ in ("ImportError", "ModuleNotFoundError", "Can't find file for module")):
+       any(_ in exc_msg for _ in ("ImportError", "ModuleNotFoundError", "<frozen", "Can't find file for module")):
     err_msg = "Invalid runtime environment ('" + exc_msg.split("Error: ")[-1].strip() + "')."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif any(_ in exc_msg for _ in ("No space left", "Disk quota exceeded", "Disk full while accessing")):
     err_msg = "No space left on output device."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "Read-only file system" in exc_msg:
     err_msg = "Output device is mounted as read-only."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "OperationalError: disk I/O error" in exc_msg:
     err_msg = "I/O error on output device."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   elif "Violation of BIDI" in exc_msg:
     err_msg = "Invalid URL (violation of Bidi IDNA rule - RFC 5893)."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  elif any(_ in exc_msg for _ in ("tempfile.mkdtemp", "tempfile.mkstemp", "tempfile.py")):
+    err_msg = "Unable to write to the temporary directory. "
+    err_msg += "Please make sure your disk is not full and "
+    err_msg += "that you have sufficient permissions to "
+    err_msg += "create temporary files and/or directories."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
 
   else:
-    err_msg = "Unhandled exception occurred in '" + settings.VERSION[1:] + "'. It is recommended to retry your "
-    err_msg += "run with the latest (dev) version from official GitHub "
-    err_msg += "repository at '" + settings.GIT_URL + "'. If the exception persists, please open a new issue "
-    err_msg += "at '" + settings.ISSUES_PAGE + "' "
-    err_msg += "with the following text and any other information required to "
-    err_msg += "reproduce the bug. The "
-    err_msg += "developers will try to reproduce the bug, fix it accordingly "
-    err_msg += "and get back to you.\n"
-    err_msg += "Commix version: " + settings.VERSION[1:] + "\n"
-    err_msg += "Python version: " + settings.PYTHON_VERSION + "\n"
-    err_msg += "Operating system: " + os.name + "\n"
-    err_msg += "Command line: " + re.sub(r".+?\bcommix\.py\b", "commix.py", " ".join(sys.argv)) + "\n"
-    err_msg = mask_sensitive_data(err_msg)
-    exc_msg = re.sub(r'".+?[/\\](\w+\.py)', "\"\g<1>", exc_msg)
-    print(settings.print_critical_msg(err_msg + "\n" + exc_msg.rstrip()))
+    err_msg = "Unhandled exception occurred in '" + settings.VERSION[1:] + "'. "
+    err_msg += "We recommend retrying your run with the latest (dev) version from the official GitHub repository at '" + settings.GIT_URL + "'. "
+    err_msg += "If the issue still occurs, you can report it on GitHub by generating a sanitized report that removes sensitive data, or by submitting the details manually." + settings.END_LINE.LF
+    err_msg += settings.SUB_CONTENT_SIGN_TYPE + " " + settings.APPLICATION.capitalize() + " version: " + settings.VERSION[1:] + settings.END_LINE.LF
+    err_msg += settings.SUB_CONTENT_SIGN_TYPE + " Python version: " + settings.PYTHON_VERSION + settings.END_LINE.LF
+    err_msg += settings.SUB_CONTENT_SIGN_TYPE + " Operating system: " + platform.platform() + settings.END_LINE.LF
+    err_msg += settings.SUB_CONTENT_SIGN_TYPE + " Command summary: " + re.sub(r".+?\bcommix\.py\b", "commix.py", " ".join(sys.argv)) + settings.END_LINE.LF
+    exc_msg = settings.TRACEBACK + re.sub(r'".+?[/\\](\w+\.py)', r"\"\g<1>", exc_msg)
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg + exc_msg.rstrip()))
+    strip_ansi = lambda s: re.sub(r"\x1B\[[0-9;]*m", "", s)
+    err_msg, exc_msg = map(strip_ansi, (err_msg, exc_msg))
     create_github_issue(err_msg, exc_msg[:])
+
+"""
+Load a list of non-empty lines from a text file.
+"""
+"""
+Read the smartphone list: every line carries the device name, an optional '*' marking the default,
+and the User-Agent header itself, so a name can never end up against the wrong header.
+"""
+def load_mobile_user_agents():
+  devices, default_index = [], 0
+  for line in load_list_from_file(settings.MOBILE_USER_AGENT_LIST, "mobile user-agent list"):
+    if line.startswith("#"):
+      continue
+    fields = [field.strip() for field in line.split("\t") if field.strip()]
+    if len(fields) < 2:
+      continue
+    if len(fields) > 2 and fields[1] == "*":
+      default_index = len(devices)
+      fields = [fields[0], fields[-1]]
+    devices.append((fields[0], fields[-1]))
+  return devices, default_index
+
+# Every non-empty line of a list file, or a stop where the file cannot be read.
+def load_list_from_file(file_path, description="file"):
+
+  if not os.path.isfile(file_path):
+    err_msg = "The " + description + " '" + file_path + "' was not found."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  try:
+    with open(file_path, "r", encoding="utf-8") as f:
+      items = [line.strip() for line in f if line.strip()]
+  except IOError:
+    err_msg = "Cannot read the " + description + " '" + file_path + "'. "
+    err_msg += "Check if the file is corrupted or unreadable."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  if not items:
+    err_msg = "The " + description + " '" + file_path + "' is empty."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  # Bookkeeping behind whatever the list is being loaded for, so it does not break up that check.
+  if settings.VERBOSITY_LEVEL > 1:
+    debug_msg = "Loaded " + str(len(items)) + " entries from " + description + " '" + file_path + "'."
+    settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+
+  return items
+
 
 # eof

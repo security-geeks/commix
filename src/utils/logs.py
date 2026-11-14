@@ -3,7 +3,7 @@
 
 """
 This file is part of Commix Project (https://commixproject.com).
-Copyright (c) 2014-2021 Anastasios Stasinopoulos (@ancst).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -13,17 +13,21 @@ the Free Software Foundation, either version 3 of the License, or
 For more see the file 'readme/COPYING' for copying permission.
 """
 import os
-import re
-import sys
 import time
-import sqlite3
-import datetime
-from src.utils import menu
+import sys
+import json
+import shlex
+import tempfile
+from datetime import date
+from datetime import datetime
+from src.core.parse import cmdline as menu
+from src.utils import har
+from src.utils import common
 from src.utils import settings
+from src.core.requests import reproduce
 from src.utils import session_handler
-from src.core.injections.controller import checks
+from src.core.controller import checks
 from src.thirdparty.six.moves import urllib as _urllib
-from src.thirdparty.colorama import Fore, Back, Style, init
 
 """
 1. Generate injection logs (logs.txt) in "./ouput" file.
@@ -31,160 +35,474 @@ from src.thirdparty.colorama import Fore, Back, Style, init
 """
 
 """
-Create log files
+Directory creation
 """
-def create_log_file(url, output_dir):
-  if not output_dir.endswith("/"):
-    output_dir = output_dir + "/"
-
-  parts = url.split('//', 1)
-  try:
-    host = parts[1].split('/', 1)[0]
-  except IndexError:
-    host = parts[0].split('/', 1)[0]
-  except OSError as err_msg:
+def path_creation(path):
+  if not os.path.exists(path):
     try:
-      error_msg = str(err_msg).split("] ")[1] + "."
-    except IndexError:
-      error_msg = str(err_msg) + "."
-    print(settings.print_critical_msg(error_msg))
-    raise SystemExit()
-
-
-  # Check if port is defined to host.
-  if ":" in host:
-    host = host.replace(":","_")
-  try:
-    os.stat(output_dir + host + "/")
-  except:
-    try:
-      os.mkdir(output_dir + host + "/")
+      # Another run against the same target may have created it in the meantime.
+      os.makedirs(path, exist_ok=True)
     except OSError as err_msg:
       try:
         error_msg = str(err_msg).split("] ")[1] + "."
       except IndexError:
         error_msg = str(err_msg) + "."
-      print(settings.print_critical_msg(error_msg))
-      raise SystemExit()
+      settings.print_data_to_stdout(settings.print_critical_msg(error_msg))
+      raise SystemExit(settings.EXIT_FAILURE)
 
-  # Create cli history file if does not exist.
-  settings.CLI_HISTORY = output_dir + host + "/" + "cli_history"
-  if not os.path.exists(settings.CLI_HISTORY):
-      open(settings.CLI_HISTORY,'a').close()
+"""
+Logs filename creation.
+"""
+def logs_filename_creation(url):
+  output_dir = menu.options.output_dir
+
+  if output_dir:
+    output_dir = os.path.abspath(output_dir)
+    if os.path.isdir(output_dir):
+      info_msg = "Using output directory '" + output_dir + "'."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+    else:
+      try:
+        os.makedirs(output_dir, exist_ok=True)
+        info_msg = "Created missing output directory '" + output_dir + "'."
+        settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+      except OSError:
+        error_msg = "Unable to create missing output directory '" + output_dir + "'."
+        settings.print_data_to_stdout(settings.print_error_msg(error_msg))
+        try:
+          output_dir = tempfile.mkdtemp(prefix=settings.APPLICATION)
+          warn_msg = "Using temporary output directory '" + output_dir + "' instead."
+          settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+        except (OSError, RuntimeError):
+          common.unhandled_exception()
+  else:
+    output_dir = settings.OUTPUT_DIR
+    path_creation(os.path.dirname(output_dir))
+
+  # Ensure path ends with OS-specific separator
+  output_dir = os.path.join(output_dir, '')
+
+  # Create the logs filename
+  return create_log_file(url, output_dir)
+
+"""
+Create log files
+"""
+def create_log_file(url, output_dir):
+  host = _urllib.parse.urlparse(url).netloc.replace(":","_") + "/"
+  logs_path = output_dir + host
+
+  path_creation(logs_path)
+
+  # Where the command history is kept. Saving it is what creates the file.
+  settings.CLI_HISTORY = logs_path + "cli_history"
 
   if menu.options.session_file is not None:
     if os.path.exists(menu.options.session_file):
       settings.SESSION_FILE = menu.options.session_file
     else:
-       err_msg = "The provided session file ('" + \
-                    menu.options.session_file + \
-                    "') does not exist." 
-       print(settings.print_critical_msg(err_msg))
-       raise SystemExit()
-  else:  
-    settings.SESSION_FILE = output_dir + host + "/" + "session" + ".db"
+      err_msg = "The provided session file ('" + menu.options.session_file + "') does not exist."
+      settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+      raise SystemExit(settings.EXIT_FAILURE)
+  else:
+    settings.SESSION_FILE = logs_path + "session.db"
 
-  # Load command history
+  """
+  How old the stored findings were before this run touched them.
+
+  Taken here because a run that replays one writes to the file as it goes, so by the time anything
+  is reported the file is this run's own age rather than the findings'.
+  """
+  try:
+    settings.SESSION_FILE_AGE_DAYS = int(time.time() - os.path.getmtime(settings.SESSION_FILE)) // (3600 * 24)
+  except (OSError, TypeError, ValueError):
+    settings.SESSION_FILE_AGE_DAYS = None
+
   checks.load_cmd_history()
 
   # The logs filename construction.
-  filename = output_dir + host + "/" + settings.OUTPUT_FILE
+  filename = logs_path + settings.OUTPUT_FILE
+  http_request_method = settings.HTTPMETHOD.POST if menu.options.data else settings.HTTPMETHOD.GET
+  command = " ".join(shlex.quote(_) for _ in sys.argv)
+  started = str(date.today()) + settings.SINGLE_WHITESPACE + datetime.now().strftime("%H:%M:%S")
+  settings.REPORT_STARTED = settings.REPORT_STARTED or started
   try:
-    output_file = open(filename, "a")
-    output_file.write("\n" + "=" * 37)
-    output_file.write("\n" + "| Started in " + \
-      datetime.datetime.fromtimestamp(time.time()).strftime('%m/%d/%Y' + \
-      " at " + '%H:%M:%S' + " |"))
-    output_file.write("\n" + "=" * 37)
-    output_file.write("\n" + re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_BOLD_SIGN) + "Tested URL : " + url)
-    output_file.close()
+    # Opened only where there is something to write: '--no-logging' asks for the file to be left
+    # alone, and opening it to write nothing is what empties the one an earlier run filled.
+    if not menu.options.no_logging:
+      with open(filename, 'w' if menu.options.flush_session else 'a', encoding=settings.DEFAULT_CODEC) as output_file:
+        output_file.write("Target: " + url + " (" + http_request_method + ")" + settings.END_LINE.LF)
+        output_file.write("Command: " + command + settings.END_LINE.LF)
+        output_file.write("Started: " + started + settings.END_LINE.LF)
   except IOError as err_msg:
     try:
       error_msg = str(err_msg.args[0]).split("] ")[1] + "."
-    except:
+    except IndexError:
       error_msg = str(err_msg.args[0]) + "."
-    print(settings.print_critical_msg(error_msg))
-    raise SystemExit()
-      
+    settings.print_data_to_stdout(settings.print_critical_msg(error_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
+  if not menu.options.output_dir:
+    filename = os.path.abspath(filename)
+
+  if menu.options.report_json:
+    # Only a report that belongs to a target of its own is kept; the one opened as the run began
+    # stands for no target yet, and is written over rather than collected.
+    if _REPORT_HELD_A_TARGET[0] and report_active() and settings.REPORT_JSON.get("target"):
+      finished = settings.REPORT_JSON
+      # The target is being put away, so it is no longer the one running - said outright rather than
+      # left to 'setdefault', which never fires on a key the report is opened carrying.
+      if finished.get("status") == settings.REPORT_STATUS_RUNNING:
+        finished["status"] = settings.REPORT_STATUS_COMPLETED
+      finished.setdefault("finished", str(date.today()) + settings.SINGLE_WHITESPACE + datetime.now().strftime("%H:%M:%S"))
+      settings.REPORT_TARGETS.append(finished)
+    settings.REPORT_JSON = {
+      "target": url,
+      "http_method": http_request_method,
+      "command": command,
+      "started": started,
+      "status": settings.REPORT_STATUS_RUNNING,
+    }
+    _REPORT_HELD_A_TARGET[0] = True
+    flush_report()
+
   return filename
 
 """
-Add the injection type / technique in log files.
+Report a log file that cannot be written - once per path, not once per line written to it.
 """
-def add_type_and_technique(export_injection_info, filename, injection_type, technique):
-  if export_injection_info == False:
-    settings.SHOW_LOGS_MSG = True
-    output_file = open(filename, "a")
-    output_file.write("\n" + re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_BOLD_SIGN) + "Type: " + injection_type.title())
-    output_file.write("\n" + re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_BOLD_SIGN) + "Technique: " + technique.title())
-    output_file.close()
-    export_injection_info = True
-
-  return export_injection_info
+def write_failure(filename, err_msg):
+  if filename in settings.UNWRITABLE_LOG_FILES:
+    return
+  settings.UNWRITABLE_LOG_FILES.add(filename)
+  warn_msg = "Unable to write to '" + filename + "' (" + str(err_msg) + "). Nothing is being logged there."
+  settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
 
 """
-Add the vulnerable parameter in log files.
+Append a line to the report - a blank line separates it from a differently grouped one.
 """
-def add_parameter(vp_flag, filename, the_type, header_name, http_request_method, vuln_parameter, payload):
-  output_file = open(filename, "a")
-  if header_name[1:] == "cookie":
-    header_name = " ("+ header_name[1:] + ") " + vuln_parameter
-  if header_name[1:] == "":
-    header_name = " ("+ http_request_method + ") " + vuln_parameter
-  output_file.write("\n" + re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_BOLD_SIGN) + the_type[1:].title() + ": " + header_name[1:])
-  vp_flag = False
-  output_file.write("\n")
-  output_file.close()
+def add_line(filename, text, group=""):
+  if menu.options.no_logging:
+    return
+  try:
+    with open(filename, 'a', encoding=settings.DEFAULT_CODEC) as output_file:
+      if group != settings.LAST_LOG_GROUP:
+        output_file.write(settings.END_LINE.LF)
+        settings.LAST_LOG_GROUP = group
+      output_file.write(text + settings.END_LINE.LF)
+  except OSError as err_msg:
+    write_failure(filename, err_msg)
 
 """
-Add any payload in log files.
+Whether --report-json was given and the report is ready to receive data.
 """
-def update_payload(filename, counter, payload):
-  output_file = open(filename, "a")
-  if "\n" in payload:
-    output_file.write("    (" +str(counter)+ ") Payload: " + re.sub("%20", " ", _urllib.parse.unquote_plus(payload.replace("\n", "\\n"))) + "\n")
+def report_active():
+  return settings.REPORT_JSON is not None
+
+"""
+Write what the report holds so far, so that a run still going can be read while it goes.
+
+Quietly, unlike the write that ends a run: a reader that is watching the file has somewhere to look
+either way, and a path that cannot be written is reported once, at the end, rather than at every
+finding on the way there.
+"""
+def flush_report():
+  if not report_active():
+    return
+  try:
+    _write_report_file()
+  except (IOError, OSError):
+    pass
+
+"""
+Put the report where it was asked for, in one move.
+
+Written beside it and renamed over it, rather than into it: a report is rewritten from the top every
+time it grows, and a reader watching it would otherwise be free to read it halfway through one.
+"""
+"""
+Whether a report has been opened for a target of its own yet, rather than only for the run.
+"""
+_REPORT_HELD_A_TARGET = [False]
+
+def _report_document():
+  if not settings.REPORT_TARGETS:
+    return settings.REPORT_JSON
+  targets = list(settings.REPORT_TARGETS)
+  if settings.REPORT_JSON:
+    targets.append(settings.REPORT_JSON)
+  return {
+    "targets": targets,
+    "started": settings.REPORT_STARTED or (targets[0].get("started") if targets else ""),
+    "status": (settings.REPORT_JSON or {}).get("status") or settings.REPORT_STATUS_RUNNING,
+    "finished": (settings.REPORT_JSON or {}).get("finished", ""),
+    "requests": settings.TOTAL_OF_REQUESTS,
+  }
+
+def _write_report_file():
+  directory = os.path.dirname(os.path.abspath(menu.options.report_json)) or "."
+  handle, path = tempfile.mkstemp(dir=directory, prefix=".report-", suffix=".json")
+  try:
+    with os.fdopen(handle, 'w', encoding=settings.DEFAULT_CODEC) as output_file:
+      json.dump(_report_document(), output_file, indent=2, ensure_ascii=False)
+    os.replace(path, menu.options.report_json)
+  except (IOError, OSError):
+    if os.path.exists(path):
+      os.unlink(path)
+    raise
+
+"""
+Settle a report that is still saying the run is going, whatever ended it.
+
+A run cut short by a critical error never reaches the lines that close one down, so the report it
+leaves behind would otherwise claim forever to be in progress - and something reading it would
+wait for an ending that has already happened.
+"""
+def finalize_report(exit_code):
+  if not report_active():
+    return
+  if settings.REPORT_JSON.get("status") != settings.REPORT_STATUS_RUNNING:
+    return
+  write_report(settings.REPORT_STATUS_COMPLETED if not exit_code else settings.REPORT_STATUS_FAILED)
+
+"""
+Open the report as the run begins, so that a reader is never left telling "not started yet" apart
+from "never asked for" by the absence of a file.
+"""
+def open_report():
+  if not menu.options.report_json or report_active():
+    return
+  settings.REPORT_JSON = {
+    "target": menu.options.url or "",
+    "started": settings.REPORT_STARTED,
+    "status": settings.REPORT_STATUS_RUNNING,
+  }
+  flush_report()
+
+"""
+Record a single fact (hostname, current user, OS, ...) into the JSON report.
+"""
+def report_set_info(key, value):
+  if report_active():
+    settings.REPORT_JSON.setdefault("info", {})[key] = value
+    flush_report()
+
+"""
+Record one enumerated item (a user, a privilege row, a password hash, ...) into the JSON report.
+"""
+def report_add_enumeration(category, item):
+  if report_active():
+    settings.REPORT_JSON.setdefault("enumeration", {}).setdefault(category, []).append(item)
+    flush_report()
+
+"""
+Record one extracted file's content into the JSON report.
+"""
+def report_add_file(path, content):
+  if report_active():
+    settings.REPORT_JSON.setdefault("files", []).append({"path": path, "content": content})
+    flush_report()
+
+"""
+Add a confirmed finding in log files, in the same format the console summary prints it.
+"""
+def add_finding(filename, injection_type, technique, http_request_method, vuln_parameter, payload, title=None):
+  settings.SHOW_LOGS_MSG = True
+  if not settings.LOGGED_FINDINGS_HEADER:
+    add_line(filename, settings.APPLICATION + " identified the following injection point(s):", group="findings")
+    settings.LOGGED_FINDINGS_HEADER = True
+  parameter = (vuln_parameter, http_request_method)
+  if parameter != settings.LAST_LOGGED_PARAMETER:
+    add_line(filename, checks.finding_parameter_line(vuln_parameter, http_request_method), group="findings")
+    settings.LAST_LOGGED_PARAMETER = parameter
   else:
-    output_file.write("    (" +str(counter)+ ") Payload: " + payload.replace("%20", " ") + "\n")
-  output_file.close()
+    add_line(filename, "", group="findings")
+  payload = str(checks.url_decode(payload)).replace(settings.END_LINE.LF, settings.END_LINE.ESCAPED_LF)
+  # The same line the summary prints, so a finding read out of a file and one read off the screen
+  # cannot say different things about what was sent. The command below is built from the payload as
+  # it went out instead, since a stand-in the sink ignores is still what reproduces the finding.
+  reported = checks.payload_with_own_value(payload)
+  for line in checks.finding_summary_lines(technique, injection_type, reported, title):
+    add_line(filename, settings.strip_ansi_codes(line), group="findings")
+  # Built here rather than when the report is written, since the cookies and headers move during a run.
+  command = reproduce.curl_command(menu.options.url, http_request_method, vuln_parameter, payload)
+  caveats = reproduce.curl_command_caveats() if command else []
+  if command and reported != payload:
+    caveats.append("the sink did not need the parameter's own value, so this command carries the '" + settings.TESTABLE_VALUE + "' that was sent in its place")
+  if command:
+    add_line(filename, settings.strip_ansi_codes(settings.SUB_CONTENT_SIGN_TYPE + "Reproduce: " + command), group="findings")
+    for caveat in caveats:
+      add_line(filename, settings.strip_ansi_codes(settings.SUB_CONTENT_SIGN_TYPE + "Note: " + caveat[0].upper() + caveat[1:] + "."), group="findings")
+  results_note(menu.options.url, http_request_method, vuln_parameter, technique, injection_type)
+  if report_active():
+    finding = {
+      "parameter": vuln_parameter,
+      "http_method": http_request_method,
+      "technique": checks.summary_technique_label(technique),
+      "type": injection_type[0].upper() + injection_type[1:],
+      "boundary": title,
+      "payload": reported,
+    }
+    if command:
+      finding["reproduce"] = command
+      if caveats:
+        finding["reproduce_caveats"] = caveats
+    settings.REPORT_JSON.setdefault("findings", []).append(finding)
+    flush_report()
 
 """
-Add any executed command and 
+Settle which CSV the findings of a run over several targets are collected in.
+
+A run given a list is one whose answer is the list back with the vulnerable entries marked, so it
+gets the file whether or not one was asked for - named after the time the run started, beside the
+run's other output. A single target has its own log and does not need a sheet of one row, so there
+the file is only what '--results-file' names.
+"""
+def results_file_in_use():
+  if menu.options.results_file or not checks.several_targets():
+    return
+  output_dir = menu.options.output_dir or settings.OUTPUT_DIR
+  menu.options.results_file = os.path.join(output_dir, datetime.now().strftime(settings.RESULTS_FILE_FORMAT).lower())
+
+"""
+Note a finding for the CSV '--results-file' keeps.
+
+One row per place and parameter rather than per finding, because what a run over many targets is
+read for is which of them answered and where - the techniques that got there are a column of it.
+"""
+def results_note(url, place, parameter, technique, injection_type):
+  results_file_in_use()
+  if not menu.options.results_file:
+    return
+  row = settings.RESULTS_FILE_ROWS.setdefault((url, place, parameter), {"techniques": set(), "notes": set()})
+  letter = session_handler.technique_letter(technique)
+  if letter:
+    row["techniques"].add(letter.upper())
+  else:
+    # A module is not one of the techniques '--technique' chooses between, so it has no letter to
+    # put in that column - what found the point is said in words instead of left out.
+    row["notes"].add(checks.summary_technique_label(technique))
+  row["notes"].add(injection_type[0].upper() + injection_type[1:])
+
+"""
+A field as a CSV file can hold it.
+"""
+def _csv_value(value):
+  value = str(value)
+  if any(char in value for char in (",", '"', "\n", "\r")):
+    value = '"' + value.replace('"', '""') + '"'
+  return value
+
+"""
+Write out what this target was found vulnerable at, and start the next one with nothing.
+"""
+def write_results_rows():
+  if not menu.options.results_file or not settings.RESULTS_FILE_ROWS:
+    return
+  rows = settings.RESULTS_FILE_ROWS
+  settings.RESULTS_FILE_ROWS = {}
+  try:
+    exists = os.path.isfile(menu.options.results_file) and os.path.getsize(menu.options.results_file) > 0
+    with open(menu.options.results_file, "a", encoding=settings.DEFAULT_CODEC) as output_file:
+      if not exists:
+        output_file.write("Target URL,Place,Parameter,Technique(s),Note(s)" + settings.END_LINE.LF)
+      for (url, place, parameter), row in rows.items():
+        output_file.write(",".join(_csv_value(field) for field in (
+          url, place, parameter, "".join(sorted(row["techniques"])), "; ".join(sorted(row["notes"]))
+        )) + settings.END_LINE.LF)
+  except (OSError, IOError) as err_msg:
+    write_failure(menu.options.results_file, err_msg)
+    return
+  if not settings.RESULTS_FILE_STARTED:
+    settings.RESULTS_FILE_STARTED = True
+    info_msg = "Findings are being appended to the CSV results file '" + menu.options.results_file + "'."
+    settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+
+"""
+Add any executed command and
 execution output result in log files.
 """
 def executed_command(filename, cmd, output):
-  try:
-    output_file = open(filename, "a")
-    output_file.write(re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_BOLD_SIGN) + "Executed command: " +  cmd + "\n")
-    output_file.write("    " + re.compile(re.compile(settings.ANSI_COLOR_REMOVAL)).sub("",settings.INFO_SIGN) + "Execution output: " +  output + "\n")
-    output_file.close()
-  except TypeError:
-    pass
+  add_line(filename, "Executed command: " + cmd, group="command:" + cmd)
+  add_line(filename, str(output.encode(settings.DEFAULT_CODEC).decode()), group="command:" + cmd)
+  if report_active():
+    settings.REPORT_JSON.setdefault("commands", []).append({"command": cmd, "output": output})
+    flush_report()
 
 """
 Fetched data logged to text files.
 """
 def logs_notification(filename):
+  # Whatever the run has to suggest for the next one goes immediately above this, the last line.
+  checks.flush_os_shell_suggestion()
   # Save command history.
-  info_msg = "Fetched data logged to text files under '" + os.getcwd() + "/" + filename + "'."
-  print(settings.print_info_msg(info_msg))
+  if not menu.options.no_logging and filename not in settings.UNWRITABLE_LOG_FILES:
+    info_msg = "Fetched data logged to text files under '" + filename + "'."
+    settings.print_data_to_stdout(settings.print_info_msg(info_msg))
 
 """
 Log all HTTP traffic into a textual file.
 """
 def log_traffic(header):
-  output_file = open(menu.options.traffic_file, "a")
-  if type(header) is bytes:
-    header = header.decode(settings.DEFAULT_CODEC) 
-  output_file.write(header)
-  output_file.close()
+  try:
+    with open(menu.options.traffic_file, "a", encoding=settings.DEFAULT_CODEC) as output_file:
+      output_file.write(header)
+  except OSError as err_msg:
+    write_failure(menu.options.traffic_file, err_msg)
+
+"""
+Close the report with the run's totals - only if something was actually logged.
+"""
+def add_footer(filename):
+  if menu.options.no_logging or not settings.LOGGED_FINDINGS_HEADER:
+    return
+  add_line(filename, "Finished: " + str(date.today()) + settings.SINGLE_WHITESPACE + datetime.now().strftime("%H:%M:%S") +
+                     "   Requests: " + str(settings.TOTAL_OF_REQUESTS) +
+                     "   Target OS: " + settings.TARGET_OS.title(), group="footer")
+
+"""
+Write the accumulated --report-json data to the requested file.
+"""
+def write_report(status=None):
+  if not menu.options.report_json:
+    return
+  if not report_active():
+    # Over before the first target was opened. A reader that was promised a file is handed one
+    # saying so, rather than an absence it has to read as either "nothing found" or "never ran".
+    settings.REPORT_JSON = {
+      "target": menu.options.url or "",
+      "started": settings.REPORT_STARTED,
+    }
+  settings.REPORT_JSON["status"] = status or settings.REPORT_STATUS_COMPLETED
+  settings.REPORT_JSON["finished"] = str(date.today()) + settings.SINGLE_WHITESPACE + datetime.now().strftime("%H:%M:%S")
+  settings.REPORT_JSON["requests"] = settings.TOTAL_OF_REQUESTS
+  settings.REPORT_JSON["target_os"] = settings.TARGET_OS.title()
+  # Without these a finding reached through evasion reads the same as one against an open target.
+  settings.REPORT_JSON["waf_detected"] = settings.WAF_ENABLED
+  settings.REPORT_JSON["evasion_applied"] = settings.WAF_EVASION_APPLIED or menu.options.tamper or ""
+  try:
+    _write_report_file()
+    info_msg = "Run results stored to the JSON file '" + menu.options.report_json + "'."
+    settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+  except IOError as err_msg:
+    error_msg = "Unable to write the JSON report to '" + menu.options.report_json + "' (" + str(err_msg) + ")."
+    settings.print_data_to_stdout(settings.print_error_msg(error_msg))
 
 """
 Print logs notification.
 """
 def print_logs_notification(filename, url):
+  from src.core.requests import keepalive
+  keepalive.close_all()
   checks.save_cmd_history()
-  if settings.SHOW_LOGS_MSG == True:
-    logs_notification(filename)
+  add_footer(filename)
+  write_report()
+  har.write()
+  if settings.SHOW_LOGS_MSG is True and not menu.options.no_logging:
+    if not settings.LOAD_SESSION:
+      logs_notification(filename)
+  # Also where the line above is not printed at all ('--no-logging'), so the suggestion is not lost.
+  checks.flush_os_shell_suggestion()
   if url:
     session_handler.clear(url)
 

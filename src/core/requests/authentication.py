@@ -3,29 +3,30 @@
 
 """
 This file is part of Commix Project (https://commixproject.com).
-Copyright (c) 2014-2021 Anastasios Stasinopoulos (@ancst).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
- 
+
 For more see the file 'readme/COPYING' for copying permission.
 """
 
-import os
-import sys
-import time
-import base64
-from src.utils import menu
+try:
+  import concurrent.futures
+  _THREADS_SUPPORTED = True
+except ImportError:
+  # "concurrent.futures" needs Python 3.2+; fall back to serial on Python 2.
+  _THREADS_SUPPORTED = False
+from src.core.parse import cmdline as menu
 from src.utils import settings
 from src.utils import session_handler
-from src.core.requests import tor
-from src.core.requests import proxy
 from src.core.requests import headers
-from src.core.injections.controller import checks
-from src.thirdparty.six.moves import input as _input
-from src.thirdparty.colorama import Fore, Back, Style, init
+from src.core.requests import redirection
+from src.utils import common
+from src.core.controller import checks
+from src.thirdparty.colorama import Style
 from src.thirdparty.six.moves import urllib as _urllib
 from src.thirdparty.six.moves import http_cookiejar as _http_cookiejar
 
@@ -37,14 +38,24 @@ do the authentication process using the provided credentials (auth_data).
 """
 The authentication process
 """
-def authentication_process():
+def authentication_process(http_request_method):
+  if not menu.options.auth_data:
+    err_msg = "The '--auth-url' option requires you to also provide the '--auth-data' option."
+    settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+    raise SystemExit(settings.EXIT_FAILURE)
+
   try:
     auth_url = menu.options.auth_url
     auth_data = menu.options.auth_data
-    #cj = cookielib.CookieJar()
     cj = _http_cookiejar.CookieJar()
-    opener = _urllib.request.build_opener(_urllib.request.HTTPCookieProcessor(cj))
-    # request = opener.open(_urllib.request.Request(auth_url))
+    opener = _urllib.request.build_opener(_urllib.request.HTTPCookieProcessor(cj), redirection.RedirectHandler(), _urllib.request.HTTPSHandler(context=settings.unverified_context()))
+    _urllib.request.install_opener(opener)
+    # Login data is always form-submitted as POST, regardless of the target URL's own method.
+    request = _urllib.request.Request(auth_url, auth_data.encode(settings.DEFAULT_CODEC), method=settings.HTTPMETHOD.POST)
+    # Check if defined extra headers.
+    headers.do_check(request)
+    response = _urllib.request.urlopen(request, timeout=settings.TIMEOUT)
+    # HTTPCookieProcessor only fills the jar after the response is received.
     cookies = ""
     for cookie in cj:
         cookie_values = cookie.name + "=" + cookie.value + "; "
@@ -52,185 +63,159 @@ def authentication_process():
     if len(cookies) != 0 :
       menu.options.cookie = cookies.rstrip()
       if settings.VERBOSITY_LEVEL != 0:
-        info_msg = "The received cookie is "  
+        info_msg = "The received cookie is "
         info_msg += str(menu.options.cookie) + Style.RESET_ALL + "."
-        print(settings.print_bold_info_msg(info_msg))
-    _urllib.request.install_opener(opener)
-    request = _urllib.request.Request(auth_url, auth_data)
-    # Check if defined extra headers.
-    headers.do_check(request)
-    #headers.check_http_traffic(request)
-    # Get the response of the request.
-    response = _urllib.request.urlopen(request, timeout=settings.TIMEOUT)
+        settings.print_data_to_stdout(settings.print_bold_info_msg(info_msg))
     return response
 
-  except _urllib.error.HTTPError as err_msg:
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
-
-  except ValueError as err_msg:
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit() 
+  except Exception as err_msg:
+    checks.connection_exceptions(err_msg)
 
 """
-Define the HTTP authentication 
-wordlists for usernames / passwords.
+HTTP auth wordlists for usernames and passwords
 """
 def define_wordlists():
 
   while True:
-    if not menu.options.batch:
-      question_msg = "Do you want to use default wordlists for dictionary-based attack? [Y/n] > "
-      do_update = _input(settings.print_question_msg(question_msg))
-    else:
-      do_update = ""  
-    if len(do_update) == 0:
-       do_update = "Y" 
+    message = "Do you want to use default wordlists for dictionary-based attack? [Y/n] "
+    do_update = common.read_input(message, default="Y", check_batch=True)
+    
     if do_update in settings.CHOICE_YES:
-      username_txt_file = settings.USERNAMES_TXT_FILE
-      passwords_txt_file = settings.PASSWORDS_TXT_FILE
-      info_msg = "Setting default wordlists for dictionary-based attack."
-      print(settings.print_info_msg(info_msg))
+      # Load default wordlists
+      usernames = common.load_list_from_file(settings.USERNAMES_TXT_FILE, "usernames wordlist")
+      passwords = common.load_list_from_file(settings.PASSWORDS_TXT_FILE, "passwords wordlist")
+      info_msg = "Using default wordlists for dictionary-based authentication check."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
       break
+
     elif do_update in settings.CHOICE_NO:
-      question_msg = "Please enter usernames wordlist > "
-      username_txt_file = _input(settings.print_question_msg(question_msg))
-      question_msg = "Please enter passwords wordlist > "
-      passwords_txt_file = _input(settings.print_question_msg(question_msg))
+      # Load custom wordlists
+      username_txt_file = common.read_input("Please enter usernames wordlist > ", default=None, check_batch=True)
+      passwords_txt_file = common.read_input("Please enter passwords wordlist > ", default=None, check_batch=True)
+      usernames = common.load_list_from_file(username_txt_file, "usernames wordlist")
+      passwords = common.load_list_from_file(passwords_txt_file, "passwords wordlist")
       break
+
     elif do_update in settings.CHOICE_QUIT:
       raise SystemExit()
+
     else:
-      err_msg = "'" + do_update + "' is not a valid answer."  
-      print(settings.print_error_msg(err_msg))
-      pass
-
-  try:
-    usernames = []
-    if settings.VERBOSITY_LEVEL != 0:
-      debug_msg = "Parsing usernames wordlist '" + username_txt_file + "'."
-      print(settings.print_debug_msg(debug_msg))
-    if not os.path.isfile(username_txt_file):
-      err_msg = "The specified file '" + str(username_txt_file) + "' does not exist."
-      print(settings.print_critical_msg(err_msg))
-      raise SystemExit() 
-    if len(username_txt_file) == 0:
-      err_msg = "The specified file '" + str(username_txt_file) + "' seems empty."
-      print(settings.print_critical_msg(err_msg))
-      raise SystemExit()
-    with open(username_txt_file, "r") as f: 
-      for line in f:
-        line = line.strip()
-        usernames.append(line)
-  except IOError: 
-    err_msg = " Check if file '" + str(username_txt_file) + "' is readable or corrupted."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
-
-  try:
-    passwords = []
-    if settings.VERBOSITY_LEVEL != 0:
-      debug_msg = "Parsing passwords wordlist '" + passwords_txt_file + "'."
-      print(settings.print_debug_msg(debug_msg))
-    if not os.path.isfile(passwords_txt_file):
-      err_msg = "The specified file '" + str(passwords_txt_file) + "' does not exist."
-      print(settings.print_critical_msg(err_msg))
-      raise SystemExit() 
-    if len(passwords_txt_file) == 0:
-      err_msg = "The specified file '" + str(passwords_txt_file) + "' seems empty."
-      print(settings.print_critical_msg(err_msg))
-      raise SystemExit() 
-    with open(passwords_txt_file, "r") as f: 
-      for line in f:
-        line = line.strip()
-        passwords.append(line)
-  except IOError: 
-    err_msg = " Check if file '" + str(passwords_txt_file) + "' is readable or corrupted."
-    print(settings.print_critical_msg(err_msg))
-    raise SystemExit()
+      common.invalid_option(do_update)
 
   return usernames, passwords
 
 """
+Try one (username, password) pair; True on success. Uses its own opener, not the global one.
+"""
+def _try_credentials(url, realm, http_request_method, authentication_type, username, password):
+  try:
+    if authentication_type.lower() == settings.AUTH_TYPE.BASIC:
+      authhandler = _urllib.request.HTTPBasicAuthHandler()
+    else:
+      authhandler = _urllib.request.HTTPDigestAuthHandler()
+    authhandler.add_password(realm, url, username, password)
+    request = _urllib.request.Request(url, method=http_request_method)
+    if menu.options.ignore_proxy:
+      opener = _urllib.request.build_opener(_urllib.request.ProxyHandler({}), authhandler, redirection.RedirectHandler(), _urllib.request.HTTPSHandler(context=settings.unverified_context()))
+    elif menu.options.tor and menu.options.tor_type == settings.PROXY_TYPE.HTTP:
+      opener = _urllib.request.build_opener(_urllib.request.ProxyHandler({settings.SCHEME: menu.options.proxy}), authhandler, redirection.RedirectHandler(), _urllib.request.HTTPSHandler(context=settings.unverified_context()))
+    else:
+      if menu.options.proxy:
+        request.set_proxy(menu.options.proxy, settings.SCHEME)
+      opener = _urllib.request.build_opener(authhandler, redirection.RedirectHandler(), _urllib.request.HTTPSHandler(context=settings.unverified_context()))
+    headers.do_check(request)
+    response = opener.open(request, timeout=settings.TIMEOUT)
+    response.close()
+    return True
+  except KeyboardInterrupt:
+    raise
+  except (Exception, SystemExit):
+    return False
+
+"""
 Simple Basic / Digest HTTP authentication cracker.
 """
-def http_auth_cracker(url, realm):
+def http_auth_cracker(url, realm, http_request_method):
     settings.PERFORM_CRACKING = True
     # Define the HTTP authentication type.
     authentication_type = menu.options.auth_type
+    if authentication_type.lower() not in (settings.AUTH_TYPE.BASIC, settings.AUTH_TYPE.DIGEST):
+      err_msg = "Dictionary-based cracking is not supported for the '" + authentication_type + "' HTTP authentication type."
+      settings.print_data_to_stdout(settings.print_critical_msg(err_msg))
+      return False
     # Define the authentication wordlists for usernames / passwords.
     usernames, passwords = define_wordlists()
-    i = 1 
-    found = False
-    total = len(usernames) * len(passwords)   
-    for username in usernames:
-      for password in passwords:
-        float_percent = "{0:.1f}%".format(round(((i*100)/(total*1.0)),2))
-        # Check if verbose mode on
-        if settings.VERBOSITY_LEVEL != 0:
-          payload = "" + username + ":" + password + ""
-          if settings.VERBOSITY_LEVEL >= 2:
-            print(settings.print_checking_msg(payload))
-          else:
-            sys.stdout.write("\r" + settings.print_checking_msg(payload) + " " * 10)
-            sys.stdout.flush()
-        try:
-          # Basic authentication 
-          if authentication_type.lower() == "basic":
-            authhandler = _urllib.request.HTTPBasicAuthHandler()
-          # Digest authentication 
-          elif authentication_type.lower() == "digest":
-            authhandler = _urllib.request.HTTPDigestAuthHandler()
-          authhandler.add_password(realm, url, username, password)
-          opener = _urllib.request.build_opener(authhandler)
-          _urllib.request.install_opener(opener)
-          request = _urllib.request.Request(url)
-          headers.do_check(request)
-          headers.check_http_traffic(request)
-          # Check if defined any HTTP Proxy (--proxy option).
-          if menu.options.proxy:
-            proxy.use_proxy(request)
-          # Check if defined Tor (--tor option).  
-          elif menu.options.tor:
-            tor.use_tor(request)
-          response = _urllib.request.urlopen(request, timeout=settings.TIMEOUT)
-          # Store valid results to session
-          admin_panel = url 
-          session_handler.import_valid_credentials(url, authentication_type, admin_panel, username, password)
-          found = True
-        except KeyboardInterrupt :
-          raise 
-        except (_urllib.error.HTTPError, _urllib.error.URLError):
-          pass
-        if found:
-          if settings.VERBOSITY_LEVEL == 0:
-            float_percent = settings.info_msg
-        else:
-          if str(float_percent) == "100.0%":
-            if settings.VERBOSITY_LEVEL == 0:
-              float_percent = settings.FAIL_STATUS
-          else:  
-            i = i + 1
-            float_percent = ".. (" + float_percent + ")"
-        if settings.VERBOSITY_LEVEL == 0:
-          info_msg = "Checking for a valid pair of credentials." 
-          info_msg += float_percent
-          sys.stdout.write("\r\r" + settings.print_info_msg(info_msg))
-          sys.stdout.flush()
-        if found:
-          valid_pair =  "" + username + ":" + password + ""
-          if not settings.VERBOSITY_LEVEL >= 2:
-            print(settings.SINGLE_WHITESPACE)
-          info_msg = "Identified a valid pair of credentials '" 
-          info_msg += valid_pair + Style.RESET_ALL + Style.BRIGHT  + "'."  
-          print(settings.print_bold_info_msg(info_msg))
-          return valid_pair
+    pairs = [(u, p) for u in usernames for p in passwords]
+    total = len(pairs)
+    completed = 0
+    last_bucket = -1
+    found_pair = None
 
-    err_msg = "Use the '--auth-cred' option to provide a valid pair of " 
-    err_msg += "HTTP authentication credentials (i.e --auth-cred=\"admin:admin\") " 
-    err_msg += "or place an other dictionary into '" 
-    err_msg += os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'txt')) + "/' directory."
-    print("\n" + settings.print_critical_msg(err_msg))  
-    return False  
+    # Count one attempt off, and say how far the guessing has got.
+    def report(username, password, succeeded):
+      nonlocal completed, last_bucket
+      completed += 1
+      if settings.VERBOSITY_LEVEL != 0:
+        payload = "'" + username + ":" + password + "'"
+        if settings.VERBOSITY_LEVEL >= 2:
+          settings.print_data_to_stdout(settings.print_checking_msg(payload))
+        else:
+          settings.print_data_to_stdout(settings.END_LINE.CR + settings.print_checking_msg(payload) + settings.SINGLE_WHITESPACE * len(payload))
+        return
+      # A "." per 4%-wide bucket, then " (done)" - same progress style as the injection techniques.
+      if not settings.PROGRESS_LINE_OPEN:
+        info_msg = "Testing for valid HTTP authentication credentials."
+        settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+      if succeeded or completed == total:
+        settings.print_data_to_stdout(" (done)")
+        return
+      bucket = int(((completed * 100) / total) // 4)
+      if bucket != last_bucket:
+        last_bucket = bucket
+        settings.print_data_to_stdout(".")
+
+    fan_out = settings.THREADS if (settings.THREADS > 1 and _THREADS_SUPPORTED) else 1
+    try:
+      if fan_out > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=fan_out) as executor:
+          for batch_start in range(0, total, fan_out):
+            if found_pair:
+              break
+            batch = pairs[batch_start:batch_start + fan_out]
+            future_to_pair = dict((executor.submit(_try_credentials, url, realm, http_request_method, authentication_type, u, p), (u, p)) for u, p in batch)
+            for future in concurrent.futures.as_completed(future_to_pair):
+              username, password = future_to_pair[future]
+              succeeded = future.result()
+              report(username, password, succeeded)
+              if succeeded and not found_pair:
+                found_pair = (username, password)
+      else:
+        for username, password in pairs:
+          succeeded = _try_credentials(url, realm, http_request_method, authentication_type, username, password)
+          report(username, password, succeeded)
+          if succeeded:
+            found_pair = (username, password)
+            break
+    except KeyboardInterrupt:
+      raise
+
+    settings.PERFORM_CRACKING = False
+    if found_pair:
+      username, password = found_pair
+      if not settings.LOAD_SESSION:
+        session_handler.import_valid_credentials(url, authentication_type, url, username, password)
+      valid_pair = "" + username + ":" + password + ""
+      if not settings.VERBOSITY_LEVEL >= 2:
+        settings.print_data_to_stdout(settings.SINGLE_WHITESPACE)
+      info_msg = "Authentication succeeded using credentials: '" + valid_pair + "'."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+      return valid_pair
+
+    err_msg = "Use the '--auth-cred' option to provide a valid pair of "
+    err_msg += "HTTP authentication credentials (i.e. '--auth-cred=admin:admin') "
+    err_msg += "or place another dictionary in the '"
+    err_msg += settings.TXT_DIR + "/' directory."
+    settings.print_data_to_stdout(settings.END_LINE.LF + settings.print_critical_msg(err_msg))
+    return False
 
 # eof

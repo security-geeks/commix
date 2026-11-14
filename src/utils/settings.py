@@ -3,7 +3,7 @@
 
 """
 This file is part of Commix Project (https://commixproject.com).
-Copyright (c) 2014-2021 Anastasios Stasinopoulos (@ancst).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -20,151 +20,19 @@ import time
 import random
 import string
 import codecs
+import unicodedata
+import threading as _threading
+from datetime import date
+from datetime import datetime
 from src.core.compat import xrange
-from src.thirdparty.six.moves import urllib as _urllib
+from src.core import eval as _eval
+
+# About
+APPLICATION = "commix"
+
+# The language whose code injection grammar is in use; '--eval' can name another one.
+EVAL_GRAMMAR = _eval.grammar()
 from src.thirdparty.six.moves import reload_module as _reload_module
-from src.thirdparty.colorama import Fore, Back, Style, init
-
-class HTTPMETHOD(object):
-  GET = "GET"
-  POST = "POST"
-  HEAD = "HEAD"
-  PUT = "PUT"
-  DELETE = "DELETE"
-  TRACE = "TRACE"
-  OPTIONS = "OPTIONS"
-  CONNECT = "CONNECT"
-  PATCH = "PATCH"
-
-# Status
-FAIL_MSG = Fore.RED + " " * 10 + Style.RESET_ALL
-FAIL_STATUS = "" + FAIL_MSG + ""
-info_msg = Fore.GREEN + " " * 10 + Style.RESET_ALL
-SUCCESS_STATUS = "" + info_msg + ""
-
-# Status Signs
-LEGAL_DISCLAIMER = "(" + Style.BRIGHT + Fore.RED + "!" + Style.RESET_ALL + ") " + "Legal disclaimer: "
-INFO_SIGN = Style.RESET_ALL + "[" + Fore.GREEN + "info" + Style.RESET_ALL + "] "
-INFO_BOLD_SIGN = "[" + Fore.GREEN + Style.BRIGHT + "info" + Style.RESET_ALL + "] " 
-REQUEST_SIGN = Style.RESET_ALL + "[" + Style.BRIGHT + Back.MAGENTA + "traffic" + Style.RESET_ALL + "] "
-RESPONSE_SIGN = Style.RESET_ALL + "[" + Style.BRIGHT + Back.MAGENTA + "traffic" + Style.RESET_ALL + "] "
-QUESTION_SIGN = Style.BRIGHT
-TOTAL_OF_REQUESTS_COLOR = Fore.LIGHTYELLOW_EX 
-WARNING_SIGN = "[" + Fore.LIGHTYELLOW_EX  + "warning" + Style.RESET_ALL + "] "
-WARNING_BOLD_SIGN = "[" + Style.BRIGHT + Fore.YELLOW  + "warning" + Style.RESET_ALL + "] " + Style.BRIGHT
-ERROR_SIGN = "[" + Fore.RED + "error" + Style.RESET_ALL  + "] " 
-ERROR_BOLD_SIGN = "["  + Style.BRIGHT + Fore.RED + "error" + Style.RESET_ALL  + "] " 
-CRITICAL_SIGN = "[" + Back.RED + "critical" + Style.RESET_ALL  + "] "
-PAYLOAD_SIGN = "[" + Fore.CYAN + "payload" + Style.RESET_ALL + "] " 
-SUB_CONTENT_SIGN = " " * 7 + Fore.GREY + "|_ " + Style.RESET_ALL
-TRAFFIC_SIGN = HTTP_CONTENT_SIGN = ""
-ABORTION_SIGN = ERROR_SIGN 
-DEBUG_SIGN = "[" + Back.BLUE + Fore.WHITE + "debug" + Style.RESET_ALL + "] " 
-DEBUG_BOLD_SIGN = "[" + Back.BLUE + Style.BRIGHT + Fore.WHITE + "debug" + Style.RESET_ALL + "] " + Style.BRIGHT
-CHECK_SIGN = DEBUG_SIGN + "Checking pair of credentials: "
-
-# Print error message
-def print_error_msg(err_msg):
-  result = ERROR_SIGN + str(err_msg) + Style.RESET_ALL
-  return result
-
-# Print error message
-def print_bold_error_msg(err_msg):
-  result = ERROR_BOLD_SIGN + Style.BRIGHT + str(err_msg) + Style.RESET_ALL
-  return result
-
-# Print critical error message
-def print_critical_msg(err_msg):
-  result = CRITICAL_SIGN + str(err_msg) + Style.RESET_ALL
-  return result
-
-# Print abortion message
-def print_abort_msg(abort_msg):
-  result = ABORTION_SIGN + str(abort_msg) + Style.RESET_ALL
-  return result
-
-# Print warning message
-def print_warning_msg(warn_msg):
-  result = WARNING_SIGN + str(warn_msg) + Style.RESET_ALL
-  return result
-
-# Print warning message
-def print_bold_warning_msg(warn_msg):
-  result = WARNING_BOLD_SIGN + str(warn_msg) + Style.RESET_ALL
-  return result
-
-# Print legal disclaimer message
-def print_legal_disclaimer_msg(legal_disclaimer_msg):
-  result = LEGAL_DISCLAIMER + str(legal_disclaimer_msg) + Style.RESET_ALL
-  return result
-
-# Print request HTTP message
-def print_request_msg(req_msg):
-  result = REQUEST_SIGN + str(req_msg) + Style.RESET_ALL
-  return result
-
-# Print response HTTP message
-def print_response_msg(resp_msg):
-  result = RESPONSE_SIGN + str(resp_msg) + Style.RESET_ALL
-  return result
-
-# Print information message
-def print_info_msg(info_msg):
-  result = INFO_SIGN + str(info_msg) + Style.RESET_ALL
-  return result
-
-# Print bold information message
-def print_bold_info_msg(info_msg):
-  result = INFO_BOLD_SIGN + Style.BRIGHT + str(info_msg) + Style.RESET_ALL
-  return result
-
-# Print payload (verbose mode)
-def print_payload(payload):
-  result = PAYLOAD_SIGN + str(payload) + Style.RESET_ALL
-  return result
-
-# Print HTTP traffic (verbose mode)
-def print_traffic(traffic):
-  result = TRAFFIC_SIGN + str(traffic) + Style.RESET_ALL
-  return result
-
-def print_request_num(number):
-  result = TOTAL_OF_REQUESTS_COLOR + "#" + str(number) + Style.RESET_ALL
-  return result
-
-def print_output(output):
-  result = Fore.GREEN + Style.BRIGHT + str(output) + Style.RESET_ALL
-  return result
-
-# Print HTTP response content (verbose mode)
-def print_http_response_content(content):
-  result = HTTP_CONTENT_SIGN + str(content) + Style.RESET_ALL
-  return result
-
-# Print checking message (verbose mode)
-def print_checking_msg(payload):
-  result = CHECK_SIGN + str(payload) + Style.RESET_ALL
-  return result
-
-# Print question message
-def print_question_msg(question_msg):
-  result = QUESTION_SIGN + question_msg + Style.RESET_ALL
-  return result
-
-# Print sub content message
-def print_sub_content(sub_content):
-  result = SUB_CONTENT_SIGN + sub_content + Style.RESET_ALL
-  return result
-
-# Print debug message (verbose mode)
-def print_debug_msg(debug_msg):
-  result = DEBUG_SIGN + debug_msg + Style.RESET_ALL
-  return result  
-
-# Print bold debug message (verbose mode)
-def print_bold_debug_msg(debug_msg):
-  result = DEBUG_BOLD_SIGN + debug_msg + Style.RESET_ALL
-  return result  
 
 # argv checks
 def sys_argv_checks():
@@ -182,10 +50,423 @@ def sys_argv_checks():
       if tamper_index is None:
         tamper_index = i if '=' in sys.argv[i] else (i + 1 if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith('-') else None)
       else:
-        sys.argv[tamper_index] = "%s,%s" % (sys.argv[tamper_index], sys.argv[i].split('=')[1] if '=' in sys.argv[i] else (sys.argv[i + 1] if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith('-') else ""))
+        sys.argv[tamper_index] = sys.argv[tamper_index] + "," + (sys.argv[i].split('=')[1] if '=' in sys.argv[i] else (sys.argv[i + 1] if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith('-') else ""))
         sys.argv[i] = ""
 
-# argv input errors
+# argv checks
+sys_argv_checks()
+from src.thirdparty.colorama import Fore, Back, Style, init
+
+from src.utils import colors
+if not colors.ENABLE_COLORING:
+  # Strip ANSI codes at write time - the print_*_msg helpers below always
+  # build them in, regardless of this flag.
+  init(strip=True, convert=False)
+
+"""
+Turn coloring off once the command line has been read.
+
+The switch is answered from sys.argv above, before anything is parsed, so that the first message is
+already written the way it was asked for. A profile names it too, and that value is known only once
+the file has been read - late, but still before the banner, so it is honoured there rather than
+parsed and dropped.
+"""
+def drop_coloring():
+  if not colors.ENABLE_COLORING:
+    return
+  colors.ENABLE_COLORING = False
+  init(strip=True, convert=False)
+
+class HTTPMETHOD(object):
+  GET = "GET"
+  POST = "POST"
+  HEAD = "HEAD"
+
+# Status Signs
+LEGAL_DISCLAIMER = "(" + Style.BRIGHT + Fore.RED + "!" + Style.RESET_ALL + ") " + "Legal disclaimer: "
+INFO_SIGN = Style.RESET_ALL + "[" + Fore.GREEN + "info" + Style.RESET_ALL + "] "
+INFO_BOLD_SIGN = "[" + Fore.GREEN + Style.BRIGHT + "info" + Style.RESET_ALL + "] "
+REQUEST_SIGN = Style.RESET_ALL + "[" + Style.BRIGHT + Back.MAGENTA + "traffic" + Style.RESET_ALL + "] "
+RESPONSE_SIGN = Style.RESET_ALL + "[" + Style.BRIGHT + Back.MAGENTA + "traffic" + Style.RESET_ALL + "] "
+QUESTION_SIGN = Style.BRIGHT
+TOTAL_OF_REQUESTS_COLOR = Fore.LIGHTYELLOW_EX
+TRACEBACK = Fore.LIGHTRED_EX
+WARNING_SIGN = "[" + Fore.LIGHTYELLOW_EX  + "warning" + Style.RESET_ALL + "] "
+WARNING_BOLD_SIGN = "[" + Style.BRIGHT + Fore.YELLOW  + "warning" + Style.RESET_ALL + "] " + Style.BRIGHT
+ERROR_SIGN = "[" + Fore.RED + "error" + Style.RESET_ALL  + "] "
+ERROR_BOLD_SIGN = "["  + Style.BRIGHT + Fore.RED + "error" + Style.RESET_ALL  + "] "
+CRITICAL_SIGN = "[" + Back.RED + "critical" + Style.RESET_ALL  + "] "
+PAYLOAD_SIGN = "[" + Fore.CYAN + "payload" + Style.RESET_ALL + "] "
+SUB_CONTENT_SIGN = ""
+SUB_CONTENT_SIGN_TYPE = " * "
+TRAFFIC_SIGN = HTTP_CONTENT_SIGN = ""
+ABORTION_SIGN = ERROR_SIGN
+DEBUG_SIGN = "[" + Back.BLUE + Fore.WHITE + "debug" + Style.RESET_ALL + "] "
+DEBUG_BOLD_SIGN = "[" + Back.BLUE + Style.BRIGHT + Fore.WHITE + "debug" + Style.RESET_ALL + "] " + Style.BRIGHT
+CHECK_SIGN = DEBUG_SIGN + "Checking for a valid pair of authentication credentials: "
+OS_SHELL_TITLE = Style.BRIGHT + "Command shell (type '?' for help)" + Style.RESET_ALL
+
+RL_INVISIBLE_START = "\001"
+RL_INVISIBLE_END = "\002"
+
+# Colour codes wrapped so readline does not count them as characters on the line.
+def styled_prompt(codes, text):
+  return RL_INVISIBLE_START + codes + RL_INVISIBLE_END + text
+
+OS_SHELL = APPLICATION + "(os_shell) > "
+
+# The timestamp every message carries.
+def print_time():
+  return "[" + Fore.LIGHTBLUE_EX  + datetime.now().strftime("%H:%M:%S") + Style.RESET_ALL + "] "
+
+"""
+Shared tail for the timestamped print_*_msg wrappers below.
+"""
+def _format_msg(sign, msg, bold=False, strip=True):
+  prefix = Style.BRIGHT if bold else ""
+  msg = str(msg).rstrip() if strip else str(msg)
+  return print_time() + sign + prefix + msg + Style.RESET_ALL
+
+# Print execution status
+def execution(status):
+  debug_msg = status + " " + APPLICATION + " at " + datetime.now().strftime("%H:%M:%S") + " (" + str(date.today()) + ")."
+  return print_time() + DEBUG_SIGN + str(debug_msg) + Style.RESET_ALL
+
+# Print legal disclaimer message
+def print_legal_disclaimer_msg(legal_disclaimer_msg):
+  result = LEGAL_DISCLAIMER + str(legal_disclaimer_msg) + Style.RESET_ALL
+  return result
+
+"""
+Keep what went wrong where a reader of the JSON report will find it.
+
+A run that could not reach its target and a run that reached it and found nothing both end with no
+findings - what tells them apart is what went wrong on the way, so it is kept rather than only
+printed. Warnings are left out: most of them are a test saying what it ruled out, which is the run
+working rather than failing.
+"""
+def record_issue(level, message):
+  if REPORT_JSON is None:
+    return
+  REPORT_JSON.setdefault("errors", []).append({
+    "time": datetime.now().strftime("%H:%M:%S"),
+    "level": level,
+    "message": strip_ansi_codes(str(message)).rstrip(),
+  })
+  # Imported here, where it is used: logs reads this module on the way in, and reading it back at
+  # the top would be the two of them waiting on each other.
+  from src.utils import logs
+  logs.flush_report()
+
+# Print error message
+def print_error_msg(err_msg):
+  record_issue("error", err_msg)
+  return _format_msg(ERROR_SIGN, err_msg)
+
+# Print error message
+def print_bold_error_msg(err_msg):
+  record_issue("error", err_msg)
+  return _format_msg(ERROR_BOLD_SIGN, err_msg, bold=True)
+
+# Print critical error message
+def print_critical_msg(err_msg, record=True):
+  if record:
+    record_issue("critical", err_msg)
+  return _format_msg(CRITICAL_SIGN, err_msg)
+
+# Print abortion message
+def print_abort_msg(abort_msg):
+  record_issue("abort", abort_msg)
+  return _format_msg(ABORTION_SIGN, abort_msg)
+
+# Print warning message
+def print_warning_msg(warn_msg):
+  return _format_msg(WARNING_SIGN, warn_msg)
+
+_PRINTED_ONCE_MESSAGES = set()
+
+"""
+Print each warning message once per run, deduping by raw text.
+"""
+def print_once(raw_msg):
+  if raw_msg not in _PRINTED_ONCE_MESSAGES:
+    _PRINTED_ONCE_MESSAGES.add(raw_msg)
+    print_data_to_stdout(print_warning_msg(raw_msg))
+
+# Print warning message
+def print_bold_warning_msg(warn_msg):
+  return _format_msg(WARNING_BOLD_SIGN, warn_msg)
+
+# Print debug message (verbose mode)
+def print_debug_msg(debug_msg):
+  return _format_msg(DEBUG_SIGN, debug_msg)
+
+# Print bold debug message (verbose mode)
+def print_bold_debug_msg(debug_msg):
+  return _format_msg(DEBUG_BOLD_SIGN, debug_msg)
+
+# Print request HTTP message
+def print_request_msg(req_msg):
+  return _format_msg(REQUEST_SIGN, req_msg)
+
+# Print response HTTP message
+def print_response_msg(resp_msg):
+  return _format_msg(RESPONSE_SIGN, resp_msg)
+
+# Print information message
+def print_info_msg(info_msg):
+  return _format_msg(INFO_SIGN, info_msg)
+
+# Print bold information message
+def print_bold_info_msg(info_msg):
+  return _format_msg(INFO_BOLD_SIGN, info_msg, bold=True)
+
+# How a line break is shown in a payload, so it does not split the line.
+ESCAPED_CR = "\\r"
+ESCAPED_CRLF = "\\r\\n"
+
+# The control characters a payload can be built from, and how each is written where it is shown.
+ESCAPED_CONTROLS = {"\t": "\\t", "\v": "\\v", "\x1a": "\\x1a"}
+
+# Print payload (verbose mode)
+def print_payload(payload):
+  """
+  One rendering for every payload that is shown, so the same payload never reads two ways.
+
+  It is shown as it is built - real separators, real spaces - because that is the form worth
+  reading and pasting; the wire form, with everything escaped for the request, is what the traffic
+  at '-v 2' is for. The only things changed are the characters a terminal does not draw, which
+  would otherwise split the line or leave two different payloads looking like the same one.
+  """
+  for sequence, shown in ((END_LINE.CRLF, ESCAPED_CRLF), (END_LINE.CR, ESCAPED_CR),
+                          (END_LINE.LF, END_LINE.ESCAPED_LF)):
+    payload = payload.replace(sequence, shown)
+  payload = re.sub(r"[\x00-\x1f\x7f]", lambda match: ESCAPED_CONTROLS.get(match.group(0),
+                   "\\x%02x" % ord(match.group(0))), payload)
+  # A payload is shown exactly as long as it is, a trailing space included.
+  return _format_msg(PAYLOAD_SIGN, payload, strip=False)
+
+# Print HTTP traffic (verbose mode)
+def print_traffic(traffic):
+  result = TRAFFIC_SIGN + str(traffic) + Style.RESET_ALL
+  return result
+
+# The request's number, as the traffic log refers to it.
+def print_request_num(number):
+  result = TOTAL_OF_REQUESTS_COLOR + "#" + str(number) + Style.RESET_ALL
+  return result
+
+# Print HTTP response content (verbose mode)
+def print_http_response_content(content):
+  result = HTTP_CONTENT_SIGN + str(content) + Style.RESET_ALL
+  return result
+
+# Print checking message (verbose mode)
+def print_checking_msg(payload):
+  return _format_msg(CHECK_SIGN, payload, strip=False)
+
+# Print question message
+def print_message(message):
+  result = QUESTION_SIGN + message + Style.RESET_ALL
+  return result
+
+"""
+Bold version of a message for use as an input() prompt.
+"""
+def input_message(message):
+  return styled_prompt(Style.BRIGHT, message)
+
+"""
+Clears any style an input() prompt (via styled_prompt()) left switched on.
+"""
+def reset_terminal_style():
+  _stdout_write(Style.RESET_ALL)
+  sys.stdout.flush()
+
+# Print sub content message
+"""
+Something read off the target, written the way the summary blocks already are.
+
+No timestamp and no sign: what was retrieved is the answer, not a step towards it, and it reads
+apart from the running log for that. Quoted, so a value that is empty or padded is still visible.
+"""
+def print_retrieved_data(label, retrieved, quoted=True):
+  text = str(retrieved)
+  if text.endswith(END_LINE.CRLF):
+    text = text[:-2]
+  elif text.endswith(END_LINE.LF):
+    text = text[:-1]
+  body = SINGLE_WHITESPACE + ("'" + text + "'" if quoted else text)
+  return label + ":" + body + Style.RESET_ALL
+
+"""
+How many terminal columns a string actually draws as - 'len()' counts codepoints, but a
+fullwidth/wide character (e.g. U+FF07, the one 'unicodequote' payloads print) still occupies two.
+"""
+def _display_width(text):
+  return sum(2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text)
+
+"""
+'ljust()' pads by codepoint count too, so a cell measured with '_display_width' still needs its
+own padding worked out the same way, not left to the builtin.
+"""
+def _display_ljust(text, width):
+  return text + " " * (width - _display_width(text))
+
+"""
+A plain ASCII table - column widths taken from the widest cell each has, headers included.
+"""
+def render_table(headers, rows):
+  widths = [_display_width(str(header)) for header in headers]
+  for row in rows:
+    for index, cell in enumerate(row):
+      widths[index] = max(widths[index], _display_width(str(cell)))
+  border = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+  def _row(cells):
+    return "| " + " | ".join(_display_ljust(str(cell), widths[index]) for index, cell in enumerate(cells)) + " |"
+  lines = [border, _row(headers), border]
+  lines.extend(_row(row) for row in rows)
+  lines.append(border)
+  return END_LINE.LF.join(lines)
+
+# Print output of command execution
+def command_execution_output(shell):
+  print_data_to_stdout(print_retrieved_data("Execution output", shell))
+  return shell
+
+"""
+Write to stdout, falling back to a lossy re-encode for unsupported characters.
+"""
+def _stdout_write(data):
+  try:
+    sys.stdout.write(data)
+  except UnicodeEncodeError:
+    encoding = getattr(sys.stdout, "encoding", None) or DEFAULT_CODEC
+    sys.stdout.write(data.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+"""
+Print data to stdout
+"""
+def print_data_to_stdout(data):
+  global PROGRESS_LINE_OPEN, PROGRESS_LINE_DONE, PROGRESS_DOT_COUNT, PROGRESS_INTERRUPTIONS
+  if getattr(_threading.current_thread(), "commix_suppress_output", False):
+    return
+  with PRINT_LOCK:
+    # A bare "\r" only moves the cursor and does not open a line.
+    if data == END_LINE.CR:
+      _stdout_write(data)
+      sys.stdout.flush()
+      return
+
+    has_cr = END_LINE.CR in data
+    has_lf = END_LINE.LF in data
+    # The marker that says a progress line is finished, which is exactly what closes it: without
+    # that, the next line written over the top of it inherits its tail and its "(done)" with it.
+    is_done_marker = data == " (done)"
+    is_dot = data == "."
+    is_spinner_style = has_cr or is_dot or is_done_marker
+    is_established_closer = data == SINGLE_WHITESPACE
+
+    if is_established_closer and not PROGRESS_LINE_OPEN:
+      return  # nothing open to close - skip the cosmetic blank line
+    if is_established_closer:
+      # A question closes the progress line through this path before it is asked, so what follows
+      # it interrupts the technique just as much as a printed message does.
+      PROGRESS_INTERRUPTIONS += 1
+
+    # However many requests the step behind it actually took, the dot line itself stops growing
+    # once it would otherwise wrap - a fresh CR-drawn line (a new "please wait", or a rewritten one
+    # that already renders its own bounded text) resets the count rather than inheriting it.
+    if is_dot:
+      if PROGRESS_DOT_COUNT >= MAX_PROGRESS_DOTS:
+        return
+      PROGRESS_DOT_COUNT += 1
+    elif has_cr:
+      PROGRESS_DOT_COUNT = 0
+
+    # Spinner continuations can append directly; other output needs a newline first.
+    if PROGRESS_LINE_OPEN and not is_spinner_style and not is_established_closer:
+      # Counted here because this is exactly "a message came between a progress line and its end".
+      PROGRESS_INTERRUPTIONS += 1
+      sys.stdout.write(END_LINE.LF)
+
+    # Only spinner output stays unterminated; other messages always end with a newline. The
+    # closer says nothing of its own, so it ends the line rather than leaving a space on it.
+    if is_established_closer:
+      data = END_LINE.LF
+    elif not is_spinner_style or is_done_marker:
+      data = data + END_LINE.LF
+
+    _stdout_write(data)
+    sys.stdout.flush()
+    PROGRESS_LINE_OPEN = is_spinner_style and not has_lf and not is_done_marker
+    PROGRESS_LINE_DONE = is_done_marker
+
+"""
+Write back onto the line that was left blank the answer that blank stood for.
+
+An answer taken from a default is an answer the run acted on, and a line showing nothing is a line
+that reads, afterwards, as though the question was never settled. Only where there is a terminal to
+rewrite: anywhere else the line has already gone.
+"""
+def echo_default_answer(message, answer):
+  if answer is None or not sys.stdout.isatty():
+    return
+  with PRINT_LOCK:
+    # Up one line and clear it - the answer was entered on the line the cursor has just left.
+    _stdout_write("\033[A\033[2K")
+    sys.stdout.flush()
+  print_data_to_stdout(print_message(str(message) + str(answer)))
+
+"""
+Clear the current line before printing, without adding a blank line when already empty.
+"""
+def clear_current_line():
+  global PROGRESS_LINE_OPEN, PROGRESS_LINE_DONE
+  with PRINT_LOCK:
+    if PROGRESS_LINE_OPEN:
+      sys.stdout.write(END_LINE.LF)
+    elif not PROGRESS_LINE_DONE:
+      sys.stdout.write(END_LINE.CR + "\033[K")
+    sys.stdout.flush()
+    PROGRESS_LINE_OPEN = False
+    PROGRESS_LINE_DONE = False
+
+"""
+Take the cursor back to the start of the current line and wipe it, leaving no newline behind.
+
+What 'clear_current_line' does where nothing is open, asked for by name: a line about to be drawn
+again word for word is overwriting itself, not following on from anything, and the newline that
+closing an open line would leave is exactly what stacks the two copies up.
+"""
+def redraw_current_line():
+  global PROGRESS_LINE_OPEN, PROGRESS_LINE_DONE
+  with PRINT_LOCK:
+    # A line that closed itself with its own "(done)" took the cursor off it, so the line about to
+    # be written again is the one above: stepped back onto rather than wiped where the cursor was
+    # left, which cleared the empty line underneath and stacked the two copies up after all.
+    if PROGRESS_LINE_DONE:
+      sys.stdout.write("\033[F")
+    sys.stdout.write(END_LINE.CR + "\033[K")
+    sys.stdout.flush()
+    PROGRESS_LINE_OPEN = False
+    PROGRESS_LINE_DONE = False
+
+"""
+Close the current spinner line with a trailing newline.
+"""
+def close_progress_line():
+  global PROGRESS_LINE_OPEN, PROGRESS_LINE_DONE
+  with PRINT_LOCK:
+    if PROGRESS_LINE_OPEN:
+      sys.stdout.write(END_LINE.LF)
+      sys.stdout.flush()
+    PROGRESS_LINE_OPEN = False
+    PROGRESS_LINE_DONE = False
+
+"""
+argv input errors
+"""
 def sys_argv_errors():
   _reload_module(sys)
   try:
@@ -197,18 +478,18 @@ def sys_argv_errors():
     # Check for illegal (non-console) quote characters.
     if len(sys.argv[i]) > 1 and all(ord(_) in xrange(0x2018, 0x2020) for _ in ((sys.argv[i].split('=', 1)[-1].strip() or ' ')[0], sys.argv[i][-1])):
         err_msg = "Illegal (non-console) quote characters ('" + sys.argv[i] + "')."
-        print(print_critical_msg(err_msg))
-        raise SystemExit()
+        print_data_to_stdout(print_critical_msg(err_msg))
+        raise SystemExit(EXIT_FAILURE)
     # Check for illegal (non-console) comma characters.
     elif len(sys.argv[i]) > 1 and u"\uff0c" in sys.argv[i].split('=', 1)[-1]:
         err_msg = "Illegal (non-console) comma character ('" + sys.argv[i] + "')."
-        print(print_critical_msg(err_msg))
-        raise SystemExit()
+        print_data_to_stdout(print_critical_msg(err_msg))
+        raise SystemExit(EXIT_FAILURE)
     # Check for potentially miswritten (illegal '=') short option.
     elif re.search(r"\A-\w=.+", sys.argv[i]):
         err_msg = "Potentially miswritten (illegal '=') short option detected ('" + sys.argv[i] + "')."
-        print(print_critical_msg(err_msg))
-        raise SystemExit()
+        print_data_to_stdout(print_critical_msg(err_msg))
+        raise SystemExit(EXIT_FAILURE)
 
 # argv checks
 sys_argv_checks()
@@ -216,129 +497,319 @@ sys_argv_checks()
 """
 The global variables.
 """
-# About
-APPLICATION = "commix"
 DESCRIPTION_FULL = "Automated All-in-One OS Command Injection Exploitation Tool"
-DESCRIPTION = "The command injection exploiter"
 AUTHOR  = "Anastasios Stasinopoulos"
-VERSION_NUM = "3.4"
-REVISION = "37"
+VERSION_NUM = "4.2"
+REVISION = "343"
+
+# How long an install may go without being updated before the run says so at the end. Read off the
+# files on disk rather than asked of anyone, so a run that never reaches the network still knows.
+LAST_UPDATE_NAGGING_DAYS = 180
+
+# How old a stored finding may be before a run that replayed it says so. Read the same way, off the
+# file the findings were written to rather than asked of anything.
+STALE_SESSION_DAYS = 7
+
+# How old the session file was before this run wrote anything to it, or None where there was none.
+SESSION_FILE_AGE_DAYS = None
 STABLE_RELEASE = False
+VERSION = "v"
 if STABLE_RELEASE:
-  VERSION = "v" + VERSION_NUM + "-stable"
+  VERSION = VERSION + VERSION_NUM
+  COLOR_VERSION = Style.BRIGHT + Style.UNDERLINE + Fore.WHITE + VERSION + Style.RESET_ALL
 else:
-  VERSION = "v" + VERSION_NUM + "-dev#" + REVISION
-YEAR = "2014-2021"
-AUTHOR_TWITTER = "@ancst" 
-APPLICATION_URL = "https://commixproject.com" 
-APPLICATION_TWITTER = "@commixproject" 
+  VERSION = VERSION + VERSION_NUM + ".dev" + REVISION
+  COLOR_VERSION = Style.UNDERLINE + Fore.WHITE + VERSION + Style.RESET_ALL
+
+YEAR = "2014-2026"
+AUTHOR_X_ACCOUNT = "@ancst"
+APPLICATION_URL = "https://commixproject.com"
+APPLICATION_X_ACCOUNT = "@commixproject"
 
 # Default User-Agent
 DEFAULT_USER_AGENT = APPLICATION + "/" + VERSION + " (" + APPLICATION_URL + ")"
 
 # Legal Disclaimer
-LEGAL_DISCLAIMER_MSG = "Usage of " + APPLICATION + " for attacking targets without prior mutual consent is illegal. " + \
-                       "It is the end user's responsibility to obey all applicable local, state and federal laws. " + \
-                       "Developers assume no liability and are not responsible for any misuse or damage caused by this program.\n"
+LEGAL_DISCLAIMER_MSG = "Attacking targets without prior mutual consent is illegal. " + \
+                       "Obeying applicable laws is your responsibility and "+ APPLICATION +" developers assume no liability.\n"
 
 # Random string generator
 RANDOM_STRING_GENERATOR = ''.join(random.choice(string.ascii_uppercase + string.digits + string.ascii_lowercase) for _ in range(10))
+# Random variable name (E-Z only).
+RANDOM_VAR_GENERATOR = ''.join(random.choice(string.ascii_uppercase[4:]) for _ in range(3))
 
-# Readline 
+# Path to text resources folder
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'data'))
+TXT_DIR = os.path.join(DATA_DIR, 'txt')
+
+START_TIME = time.time()
+
+# Maximum number of lines to save in history file
+MAX_HISTORY_LENGTH = 1000
+
+# Readline
 READLINE_ERROR = False
 
-# Random Tag
-RANDOM_TAG = "" 
+# User-applied operating system command
+USER_APPLIED_CMD = ""
 
-if RANDOM_TAG == "" : 
+# Random Tag
+RANDOM_TAG = ""
+
+if RANDOM_TAG == "" :
   RANDOM_TAG = RANDOM_STRING_GENERATOR
 
 # Proxy
-PROXY_REGEX = r"((http[^:]*)://)?([\w\-.]+):(\d+)"
+# A proxy as it may be written: an optional scheme, optional credentials of its own, an address
+# and a port - so that a SOCKS proxy is not read as an HTTP one, and a password is not dropped.
+PROXY_REGEX = r"(?i)\A((http[s]?|socks[45])://)?(?:([^:@\s/]+:[^@\s/]*)@)?([\w\-.]+):(\d+)\Z"
+# The scheme the proxy itself speaks, which is not the scheme of the target - SCHEME is that one.
+PROXY_SCHEME = ""
+PROXY_SCHEMES = ("http", "https", "socks4", "socks5")
+SOCKS_SCHEMES = ("socks4", "socks5")
+
+# Auth Credentials format
+AUTH_CRED_REGEX = r"^(.*?):(.*?)$"
 
 # Inject Tag
 INJECT_TAG = "INJECT_HERE"
 INJECT_TAG_REGEX = r"(?i)INJECT[_]?HERE"
 VALUE_BOUNDARIES = r'[\\/](.+?)[\\/]'
 
-#Basic heuristic checks for code injection warnings or... phpinfo page ;)
-PHPINFO_PAYLOAD = "phpinfo()"
+# Safe characters to keep unescaped in URL paths
+SAFE_PATH = "*%/"
+# Safe characters to keep unescaped in query strings
+SAFE_QUERY = SAFE_PATH + "=?&"
 
-PHP_EXEC_FUNCTIONS = [ "" + PHPINFO_PAYLOAD + "", 
-  "exec(" + PHPINFO_PAYLOAD + ")", 
-  "eval(" + PHPINFO_PAYLOAD + ")", 
-  "system(" + PHPINFO_PAYLOAD + ")" 
-]
+"""
+Characters left unescaped inside a payload.
 
-PHPINFO_CHECK_PAYLOADS = [ 
-  [".print(" + x + ")" for x in PHP_EXEC_FUNCTIONS], 
-  [")'}" + x + "'#" for x in PHP_EXEC_FUNCTIONS],
-  ["'." + x + ".'" for x in PHP_EXEC_FUNCTIONS],
-  ["{${" + x + "}}" for x in PHP_EXEC_FUNCTIONS],
-  ["\\\\/{${" + x + "}}\\/\\" for x in PHP_EXEC_FUNCTIONS]
-]
+Only '%', so that the encoded sequences the payloads write for themselves survive - everything else
+is escaped, the '&' and '=' that would otherwise end the parameter the payload travels in included.
+The carrier is encoded separately, and keeps those two, being where they do the separating.
+"""
+SAFE_PAYLOAD = "%"
 
-PHPINFO_CHECK_PAYLOADS = [x for payload in PHPINFO_CHECK_PAYLOADS for x in payload]
+"""
+A query string this long risks being cut off, so characters are given back to it one at a time.
 
-# Executed phpinfo()
-IDENTIFIED_PHPINFO = False
-CODE_INJECTION_PHPINFO = r"PHP Version </td><td class=\"v\">(([\w\.]+))"
+Servers and proxies put their own limit on a request line, and an encoded payload is several times
+the length of what it stands for. These four are legal in a query unencoded, so handing them back
+shortens it without changing what the target reads - taken in turn, and only while it is still
+over length, so a request that was never near the limit is encoded exactly as any other.
+"""
+"""
+What '--skip-urlencode' still leaves encoded: nothing that a URL can carry as itself.
 
-# Code injection warnings
+Every printable ASCII character bar the space, which a request line cannot hold - so a payload
+written with separators, quotes and brackets arrives spelled the way it was written, while a
+non-ASCII byte is still encoded and the request stays a valid one.
+"""
+SKIP_URLENCODE_SAFE_CHARS = "".join(chr(_) for _ in range(33, 127))
+
+URLENCODE_CHAR_LIMIT = 2000
+URLENCODE_FAILSAFE_CHARS = "()|,"
+
+"""
+Whether '+' is one of the whitespace substitutes this run may use.
+
+Asked of the whole list rather than its first entry: a tamper script can append a substitute rather
+than replace one, and 'multiplespaces' repeats whichever is there - so a run that really does send
+'+' for a space had its pluses escaped, and the target read them back as pluses rather than spaces.
+"""
+def plus_is_whitespace():
+  return any(substitute and set(substitute) == set("+") for substitute in WHITESPACES)
+
+"""
+Safe query-string characters; allow '+' only when it is a whitespace substitute in use.
+"""
+def query_safe_chars():
+  if plus_is_whitespace():
+    return SAFE_QUERY + "+"
+  return SAFE_QUERY
+
+"""
+Safe characters inside a payload, as above.
+"""
+def payload_safe_chars():
+  if plus_is_whitespace():
+    return SAFE_PAYLOAD + "+"
+  return SAFE_PAYLOAD
+
+# Default (windows) target host's python interpreter
+WIN_PYTHON_INTERPRETER = "python.exe"
+WIN_CUSTOM_PYTHON_INTERPRETER = "C:\\Python27\\python.exe"
+USER_DEFINED_PYTHON_DIR = False
+
+# Default (linux) target host's python interpreter
+LINUX_PYTHON_INTERPRETER = "python3"
+LINUX_CUSTOM_PYTHON_INTERPRETER = "python27"
+USER_DEFINED_PYTHON_INTERPRETER = False
+
+# Feeds 'set /p' from the null device, so its no-newline echo trick gets EOF instead of blocking.
+CMD_NUL = "<nul"
+
+# The substitution that cannot hold another one - see checks.substitution_nests().
+BACKTICK_SUBSTITUTION = "`"
+# Said once, where a confirmed pipe cannot carry the retrieval the finding would be read with.
+PIPE_RETRIEVAL_NOTICE_GIVEN = False
+# The one that can, to go back to where a script that chose otherwise turns out not to apply.
+NESTING_SUBSTITUTION = ("$(", ")")
+CMD_SUB_PREFIX = "$("
+CMD_SUB_SUFFIX = ")"
+
+# Sent to be blocked, never to run: read-only and instant, in both shells, chained every way.
+WAF_CHECK_PAYLOAD = ";cat /etc/passwd|type C:\\Windows\\win.ini&&dir ../../||$(cat /etc/passwd)"
+"""
+How much of the ordinary page the answer to that payload has to still resemble before it is taken
+for an answer at all.
+
+A block does not have to arrive as a status code. A filter that answers in-band serves its own
+short refusal with a 200, and the application below is never reached - which anything reading the
+code alone takes for an ordinary answer, and goes on sending payloads that cannot work. What gives
+it away is how little that page resembles what the same target answers an ordinary request with.
+"""
+WAF_CHECK_RATIO = 0.5
+# What an ordinary request was answered with, kept from the first one of the run for that comparison.
+WAF_CHECK_BASELINE = ""
+WAF_ENABLED = False
+# The product name a blocked response was matched to, via 'WAF_SIGNATURES' - None until (if ever) found.
+WAF_IDENTIFIED = None
+
+class HEURISTIC_TEST(object):
+  POSITIVE = True
+
+# Basic command-injection checks, built fresh per parameter with random values and markers.
+BASIC_STRING = ""
+BASIC_COMMAND_INJECTION_PAYLOADS = []
+ALTER_INTERPRETER_BASIC_COMMAND_INJECTION_PAYLOADS = []
+BASIC_COMMAND_INJECTION_RESULT = ""
+IDENTIFIED_COMMAND_INJECTION = False
+
+# Whether the results-based technique still asks the target to hand its output back a line at a
+# time. Turned off for the rest of this target once a reading comes back empty, which is how a
+# target without the tool that reading needs answers.
+RESULTS_BASED_EXACT_OUTPUT = True
+
+# What the target is asked to put in place of the line breaks its output carries, so that the output
+# arrives as the single line the markers are looked for on. A sink handing back only the last line
+# of what it ran - which is most of them, 'exec()' in PHP among them - answers with nothing at all
+# where a break of its own went out, so the breaks cannot travel as themselves. Marked instead and
+# put back once what is between the markers has been taken, the way the page's own breaks already
+# are. Made once for the run, out of the letters a shell, a page and its encoding all hand back
+# unchanged.
+RESULTS_BASED_LF_MARKER = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+RESULTS_BASED_CR_MARKER = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+
+# Basic heuristic checks for code injection: the probe that says code was evaluated, what its
+# answer looks like coming back, and the interpreter's own complaints that give the same away.
+# All of it belongs to the language, so it is read from its module under 'src/core/eval'.
+EVAL_PROBE_PAYLOADS = EVAL_GRAMMAR.PROBE_PAYLOADS
+EVAL_PROBE_REGEX = EVAL_GRAMMAR.PROBE_REGEX
+EVAL_WARNINGS = EVAL_GRAMMAR.WARNINGS
+
+# The probe answered, or the interpreter complained.
+IDENTIFIED_EVAL_PROBE = False
 IDENTIFIED_WARNINGS = False
-CODE_INJECTION_WARNINGS = ["eval()'d code", "runtime-created function", "usort()", "assert()", "preg_replace()"]
 
 SKIP_CODE_INJECTIONS = False
 SKIP_COMMAND_INJECTIONS = False
 
-# User-defined stored post data.
+# User-defined stored POST data.
 USER_DEFINED_POST_DATA = ""
+# Ignore user-defined stored POST data.
+IGNORE_USER_DEFINED_POST_DATA = False
 
-# The wildcard character
-WILDCARD_CHAR = "*"
+# Custom injection marker
+CUSTOM_INJECTION_MARKER_CHAR = "*"
+CUSTOM_INJECTION_MARKER = False
+ASTERISK_MARKER = "__ASTERISK__"
+CUSTOM_INJECTION_MARKER_PARAMETERS_LIST = []
+PRE_CUSTOM_INJECTION_MARKER_CHAR = ""
+POST_CUSTOM_INJECTION_MARKER_CHAR = ""
+# Patterns that legitimately contain '*' (e.g. 'Accept: */*').
+PROBLEMATIC_CUSTOM_INJECTION_PATTERNS = r"(;q=[^;'*]+)|(\*/\*)"
 
-# Testable parameter(s) - comma separated. 
-TEST_PARAMETER = ""
+class INJECTION_MARKER_LOCATION(object):
+  URL = False
+  DATA = False
+  COOKIE = False
+  HTTP_HEADERS = False
+  CUSTOM_HTTP_HEADERS = False
 
-# Skip testing for given parameter(s) - comma separated. 
-SKIP_PARAMETER = ""
+SKIP_NON_CUSTOM_PARAMS = None
+
+TESTABLE_PARAMETERS_LIST = []
+SKIP_PARAMETERS_LIST = []
+TESTABLE_PARAMETERS = None
+NOT_TESTABLE_PARAMETERS = True
+TESTED_PARAMETERS_LIST = []
+METHODS_WITH_NON_LISTED_PARAMS = []
 
 # Use a proxy to connect to the target URL.
 SCHEME = ""
 
+class OS(object):
+  UNIX = "unix"
+  WINDOWS = "windows"
+
 # Default target host OS (Unix-like)
-TARGET_OS = "unix"
+TARGET_OS = OS.UNIX
 
-# Verbosity level: 0-1 (default 0)
+IDENTIFIED_TARGET_OS = False
+IGNORE_IDENTIFIED_TARGET_OS = None
+
+# Verbosity level (0-4, Default: 0)
 VERBOSITY_LEVEL = 0
-
-# Local HTTP server ip
-LOCAL_HTTP_IP = ""
-
-# Local HTTP server port
-LOCAL_HTTP_PORT = random.randint(50000,60000)
 
 # Detection / Exploitation phase(s)
 DETECTION_PHASE = False
 EXPLOITATION_PHASE = False
 
+# Prevent the shell from interpreting the redirection operators.
+NO_OUTPUT = ">/dev/null 2>&1"
+
 # Exploitation techniques states
-CLASSIC_STATE = False
+RESULTS_BASED_STATE = False
 EVAL_BASED_STATE = False
 TIME_BASED_STATE = False
 FILE_BASED_STATE = False
 TEMPFILE_BASED_STATE = False
-TIME_RELATIVE_ATTACK = False
+OOB_STATE = False
+
+"""
+The technique being tested right now, asked about by whatever needs to know what is carrying a
+command - how a file is worth fetching, say, which is one answer for a technique that gets the
+whole of it at once and another for one that pays per byte.
+
+Held per thread, with the last one announced anywhere as the fallback: several workers share a run,
+and which technique one of them is on says nothing about what another is doing. Read off a single
+name, a worker asks its question about whichever technique some other worker happened to announce
+last - and a caller that knows which one it means should pass it rather than ask at all.
+"""
+CURRENT_TECHNIQUE = None
+_CURRENT_TECHNIQUE = _threading.local()
+
+# Mark this thread as testing the technique named, and leave it as the run's own last word on it.
+def set_technique(technique):
+  global CURRENT_TECHNIQUE
+  _CURRENT_TECHNIQUE.name = technique
+  CURRENT_TECHNIQUE = technique
+
+# What this thread is on, or the last one announced where this thread has announced nothing itself.
+def current_technique():
+  return getattr(_CURRENT_TECHNIQUE, "name", None) or CURRENT_TECHNIQUE
+TIME_RELATED_ATTACK = False
+TIME_RELATED_ATTACK_WARNING = False
+LAST_COMPLETED_TECHNIQUE = None
+LAST_DOT_BUCKET = -1
 
 # Stored applied techniques
 SESSION_APPLIED_TECHNIQUES = ""
 
-# The name of the operating system dependent module imported. 
+# The name of the operating system dependent module imported.
 PLATFORM = os.name
 IS_WINDOWS = PLATFORM == "nt"
-
-# Check if OS is Windows.
-#IS_WINDOWS = hasattr(sys, "getwindowsversion")
 
 # Git URL.
 GIT_URL = "https://github.com/commixproject/" + APPLICATION + ".git"
@@ -349,7 +820,7 @@ ISSUES_PAGE = "https://github.com/commixproject/" + APPLICATION + "/issues/new"
 COMMIX_ROOT_PATH = os.path.abspath(os.curdir)
 
 # Output Directory
-OUTPUT_DIR = ".output/"  
+OUTPUT_DIR = ".output/"
 
 # Output file name
 OUTPUT_FILE_NAME = "logs"
@@ -358,49 +829,290 @@ OUTPUT_FILE_NAME = "logs"
 OUTPUT_FILE_EXT = ".txt"
 OUTPUT_FILE = OUTPUT_FILE_NAME + OUTPUT_FILE_EXT
 
-# Max Length.
-MAXLEN = "10000"
+# Max Length for execution output.
+MAXLEN = 10000
+# How long an output is allowed to be said to be before the answer is disbelieved rather than
+# trusted - a bound on what is plausible, not on what is read. An oracle that answers yes to
+# everything would otherwise double its way up for as long as the arithmetic holds.
+MAX_INFERRED_LENGTH = 50 * 1024 * 1024
 
-# Maximum response total page size (trimmed if larger)
-MAX_CONNECTION_TOTAL_SIZE = 100 * 1024 * 1024
+# The factor the length search grows its bracket by before halving it back. Larger reaches a long
+# output in fewer steps, at the cost of a wider bracket to halve - and measured across the lengths
+# worth reading, four is where the two balance, saving several probes on a large output for at most
+# one more on the smallest.
+LENGTH_SEARCH_BASE = 4
 
-# Slow target response.
-SLOW_TARGET_RESPONSE = 3
+STDIN_PARSING = False
 
-# The testable parameter.
-TESTABLE_PARAMETER = "" 
+# How far the target's own answers may spread before a delay read against them is unreliable.
+# What makes a time-related answer hard to read is the times moving about, not how long they are:
+# a target that always takes the same three seconds tells a delay apart as cleanly as a fast one,
+# while one whose answers swing by seconds hides the delay inside its own spread.
+SLOW_TARGET_RESPONSE_STDEV = 0.5
+
+# Number of samples estimate_response_time() takes the median of.
+RESPONSE_TIME_SAMPLES = 3
+
+# Pre-injection baseline - the target's own round-trip time before any delay logic runs.
+URL_TIME_RESPONSE = 0
+
+# The delay settled on for this target, kept so every parameter after the first reads it rather
+# than measuring the same target again.
+ESTIMATED_TIMESEC = None
+# (url, http_request_method) the response-time baseline is sampled from, filled in on first use.
+BASELINE_TARGET = None
+# Last reported minimum safe delay, so the same floor is announced only once.
+REPORTED_MIN_SAFE_TIMESEC = None
+
+# Cache url_response()'s connection-test timing for reuse by estimate_response_time().
+INIT_CONNECTION_TIME = None
+
+# When that connection-test response was fetched (time.time()).
+INIT_CONNECTION_FETCH_TIME = None
+
+# URL actually used for that request (may carry the WAF probe marker).
+INIT_CONNECTION_URL = None
+
+# Max wait before re-checking page stability.
+STABILITY_CHECK_DELAY = 0.5
+
+# Below this similarity ratio, two page fetches count as "dynamic".
+STABILITY_SIMILARITY_THRESHOLD = 0.98
+
+# The two pages a question with a known answer came back with, kept so that every later answer is
+# read against them rather than against a threshold - what a condition changes can be two characters
+# of a page that is otherwise thousands, which no ratio of the whole would notice.
+# What a Windows payload prints when its test holds, made once for the run. cmd.exe carries no exit
+# status back to a page that only shows what a command printed, so the answer has to be printable.
+BOOLEAN_MARKER = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
+
+# Whether the answer is read off a marker the payload printed rather than off the page the target
+# branched into - settled per target, and only where branching was shown to say nothing.
+BOOLEAN_PRINTED_STATE = False
+
+# Said once for the run, where a retrieval is being made a byte at a time on a single thread.
+BOOLEAN_THREADS_SUGGESTED = False
+
+# Said once for the run, the first time the tempfile-based technique reads its created file through
+# a calibrated oracle instead of through a delay.
+TEMPFILE_ORACLE_ANNOUNCED = False
+
+# Said once for the run, where no oracle could be calibrated and the created file is read through
+# a delay instead - the other half of the notice above.
+TEMPFILE_TIME_FALLBACK_ANNOUNCED = False
+
+# The two answers as they arrived, kept beside their comparable forms so that what tells them apart
+# can be quoted back as an option the next run can be given.
+BOOLEAN_TRUE_CODE = None
+BOOLEAN_FALSE_CODE = None
+
+BOOLEAN_TRUE_RAW = None
+BOOLEAN_FALSE_RAW = None
+
+BOOLEAN_TRUE_PAGE = None
+BOOLEAN_FALSE_PAGE = None
+
+# The raw length of the two calibration pages, read alongside them - what '--lengths' (and
+# '--null-connection', which has no body to compare at all) bisects on instead of page content.
+BOOLEAN_TRUE_LENGTH = None
+BOOLEAN_FALSE_LENGTH = None
+
+# Whether '--null-connection' is worth it here: established once, from the first calibration page,
+# since the "skip the body, pay a fresh connection instead" trade only wins past a minimum size.
+NULL_CONNECTION_WORTHWHILE = None
+NULL_CONNECTION_MIN_LENGTH = 32768
+
+# One-time "reflected value(s) found" notice already shown this run.
+REFLECTIVE_VALUE_FOUND = False
+
+# What stands in for a reflected payload once it is taken out of a page - a marker of its own rather
+# than the text it replaces, so two pages whose payloads differ in length still read as one page
+# where the reflection was the only thing telling them apart.
+REFLECTED_VALUE_MARKER = "__REFLECTED_VALUE__"
+
+# A run of anything but a newline, standing in for whatever the target put between the payload's own
+# alphanumeric runs: a '+' where a space went in, an entity for a character it escaped, a space of
+# another width. The payload that comes back is rarely the payload that went out.
+REFLECTED_GAP_REGEX = r"[^\n]{1,168}?"
+
+# How many of those runs the pattern is built from, taken half from each end past it - one segment
+# per run leaves a pattern with a page's worth of positions to try for every one of them.
+REFLECTED_MAX_PATTERN_PARTS = 10
+
+# How much longer than the payload a match may be before it is left alone. A payload's own
+# alphanumeric runs are words a page says for itself - the value that was sent back, 'echo', a tag -
+# and a pattern made of them matches those scattered across unrelated text as readily as the
+# reflection. Escaping stretches a reflection; it does not stretch it into paragraphs.
+REFLECTED_MAX_LENGTH_FACTOR = 4
+REFLECTED_LENGTH_ALLOWANCE = 32
+
+# Whether the caveat about an evaluated finding that a shell could equally explain has been given.
+EVAL_OVER_SHELL_SAID = False
+
+
+RESPONSE_DELAYS = False
+
+TESTABLE_VALUE = ""
+
+# Whether TESTABLE_VALUE has already been swapped for a disposable placeholder for this parameter.
+TESTABLE_VALUE_OPTIMIZED = False
+
+# What the early probe put aside when it dropped the parameter's own value: the value, what stands in
+# for it, and the request as it read beforehand - so a pass that confirms nothing can be made again
+# with the value back in place rather than written off on the strength of an optimisation.
+VALUE_SKIPPED_EARLY = None
+
+# The parameter's own value, kept where a short random one stands in for it, so that what is
+# written out at the end reads as the value the target was given rather than as the stand-in.
+TESTABLE_VALUE_STOOD_IN_FOR = ""
+
+# Set once the value has been put back and the pass made again, so the probe does not drop it a
+# second time and send the run round the same loop.
+VALUE_SKIP_REFUSED = False
+
+"""
+Whether the payload stands in place of the parameter's own value rather than behind it.
+
+Behind it is the shape nearly every sink wants: what the application built around the value is still
+there, and the payload chains onto the end of it. A sink that reads the value's own first byte is the
+exception - an interpreter's two-argument open() handed a leading '|' runs what follows as a command,
+and a value in front of that pipe is read as a filename instead - so there the value has to go.
+"""
+REPLACE_VALUE = False
+
+# Asked once for the run, like the whitespace and dash retries' own answers.
+REPLACE_VALUE_RETRY_CHOICE = None
+
+# The techniques the run was given, kept for the parameters that follow one tested with fewer.
+TECHNIQUES_BEFORE_NARROWING = None
+
+# Whether the file-based technique was accepted for a run given a document root but other techniques.
+FILE_BASED_NARROWING_CHOICE = None
+
+"""
+Whether going around a filtered whitespace was accepted, asked once and held for the run.
+
+Every technique is sent around again for it, so the pass costs about what the one before it did -
+worth offering rather than spending unannounced, and worth asking only once, since the answer is
+about the target's own filter rather than about any one technique that just came back empty.
+"""
+WHITESPACE_RETRY_CHOICE = None
+# Whether the temporary directory was already accepted or refused for this run.
+TEMP_FOLDER_CHOICE = None
+# The same consent, asked about a filter built around '-' rather than around whitespace.
+DASHLESS_RETRY_CHOICE = None
+# And the same again for one built around '$', which is what every command substitution this writes
+# is opened with - and what the whitespace pass above reaches for first, in '${IFS}'.
+BACKTICK_RETRY_CHOICE = None
 
 # The HTTP header name.
 HTTP_HEADER = ""
 
-# The command injection prefixes.
-PREFIXES = ["", " ", "'", "\"", "&", "%26", "|", "%7C", "%27", "%22", "'%26"]
+EXTRA_HTTP_HEADERS = False
 
-# The command injection separators.
-SEPARATORS = ["", ";", "%3B", "&", "%26", "%1a", "&&", "%26%26", "|", "%7C", "||", "%7C%7C", "%0a", "%0d%0a"]
+# Use the full printable ASCII range; bisection only depends on ordinal bounds.
+CHAR_POOL_SINGLE = list(range(32, 127))
+# The largest ordinal a byte can be. The pools below stop at printable ASCII, which is what output
+# mostly is - a byte above that is searched for only once the pool has been ruled out.
+HIGHEST_BYTE = 255
+# The smallest, for a byte that sits under the pool's first character the same way.
+LOWEST_BYTE = 0
 
-# The command injection suffixes.
-SUFFIXES = ["", "'", "\"", "&&", "%26%26", "|", "%7C", "||", "%7C%7C", " #", "//", "\\\\", "%26'", "%27", "%22", "%5C%5C", "%2F%2F"]
+# How a byte the page's own encoding cannot read is written down instead, so that it is still the
+# byte that was sent - and the error handler that writes it that way.
+UNREADABLE_BYTE_FORMAT = "\\x%02x"
+UNREADABLE_BYTE_HANDLER = "commix-keep-bytes"
+# The same thing read back: only a byte past ASCII is ever written out this way.
+UNREADABLE_BYTE_REGEX = r"\\x([89a-fA-F][0-9a-fA-F])"
+
+# Newline and tab are part of real command output, so they have to be recoverable too.
+CHAR_POOL_MULTI = [9, 10] + list(range(32, 127))
+
+"""
+The command injection separators, as the shell reads them rather than as a URL spells them.
+
+Written out here and encoded once at the end, where a payload meets the thing that carries it -
+so what a payload is made of stays readable, nothing has to remember which half of it was already
+escaped, and a character that is not a separator at all can be escaped without disturbing one that
+is. It also means '%' is a per-cent sign here, not the start of an escape.
+"""
+SEPARATORS = []
+DEFAULT_SEPARATORS = [";", "&", "|", ""]
+# cmd.exe's end-of-file. A separator only there, but a suffix on either target.
+CTRL_Z = "\x1a"
+SPECIAL_SEPARATORS = ["&&", "||", "\n", "\r\n", CTRL_Z]
+SEPARATORS_LVL1 = DEFAULT_SEPARATORS + SPECIAL_SEPARATORS
+SEPARATORS_LVL3 = SEPARATORS_LVL2 = SEPARATORS_LVL1
+
+"""
+The command injection prefixes and suffixes.
+
+A quote is carried from the first level, as the reference carries one in its own. The commonest
+shape a real sink has is a value spliced into a quoted string, and a boundary that never opens the
+quote reaches none of them - held back to a level nobody runs by default, those targets are
+reported as not injectable, which is true of what was tried and false of the target.
+
+It costs little: a quote suffix is kept only beside its own prefix, so the first level asks five
+prefix/suffix pairs where the cross-product would be nine - the count the reference asks at its own
+first level. Levels two and three carry exactly what they carried before; the quotes moved down
+rather than being added to theirs.
+"""
+PREFIXES = []
+PREFIXES_LVL1 = ["", "'", "\""]
+PREFIXES_LVL2 = PREFIXES_LVL1 + SEPARATORS_LVL1
+PREFIXES_LVL3 = PREFIXES_LVL2
+
+SUFFIXES = []
+SUFFIXES_LVL1 = ["", "'", "\""]
+SUFFIXES_LVL2 = SUFFIXES_LVL1 + SEPARATORS_LVL1
+# A comment is what the shell in hand calls one. '//' and '\\' were added for the evaluation sinks
+# back when those had no grammar of their own to carry them, and every grammar carries them now -
+# PHP its '//' and '/*', JavaScript its '//', Lua its '--'. Left here they were asked of a shell
+# that reads neither as an ending, once per separator on every parameter tested.
+SUFFIXES_LVL3 = SUFFIXES_LVL2 + [" #"]
+
+# A quote closes only its own kind.
+QUOTES = ("'", "\"")
+
+# Boundary lists already put in the order a shape of value asks for, kept rather than sorted again.
+BOUNDARY_ORDER_CACHE = {}
 
 # Bad combination of prefix and separator
-JUNK_COMBINATION = ["&&&", "|||", "|&&", "&|", "&;", "|;", "%7C;", "%26;", "%7C&"]
+JUNK_COMBINATION = [SEPARATORS_LVL1[i] + SEPARATORS_LVL1[j] for i in range(len(SEPARATORS_LVL1)) for j in range(len(SEPARATORS_LVL1))]
 
-# Execution functions
-EXECUTION_FUNCTIONS = ["exec", "system", "shell_exec", "passthru", "proc_open", "popen"]
-
-# The code injection prefixes.
-EVAL_PREFIXES = [".", "{${", "\".", "'.", "", ";", "'", ")", "')", "\")", ");}", "');}", "\");}"]
+# Execution functions, and the boundaries that break into an evaluated string and close it again -
+# all of them the language's own, and so read from its module rather than written out here.
+EXECUTION_FUNCTIONS = []
+EXECUTION_FUNCTIONS_LVL1 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL1
+EXECUTION_FUNCTIONS_LVL2 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL2
+EXECUTION_FUNCTIONS_LVL3 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL3
 
 # The code injection separators.
-EVAL_SEPARATORS = ["", "%0a", "\\n", "%0d%0a", "\\r\\n"]
+EVAL_SEPARATORS = []
+EVAL_SEPARATORS_LVL1 = EVAL_GRAMMAR.SEPARATORS_LVL1
+EVAL_SEPARATORS_LVL2 = EVAL_GRAMMAR.SEPARATORS_LVL2
+EVAL_SEPARATORS_LVL3 = EVAL_GRAMMAR.SEPARATORS_LVL3
+
+# The code injection prefixes.
+EVAL_PREFIXES = []
+EVAL_PREFIXES_LVL1 = EVAL_GRAMMAR.PREFIXES_LVL1
+EVAL_PREFIXES_LVL2 = EVAL_GRAMMAR.PREFIXES_LVL2
+EVAL_PREFIXES_LVL3 = EVAL_GRAMMAR.PREFIXES_LVL3
 
 # The code injection suffixes.
-EVAL_SUFFIXES = ["", "}}", ".\"", ".'", "", "\\\\", "//", "#", ")}"]
+EVAL_SUFFIXES = []
+EVAL_SUFFIXES_LVL1 = EVAL_GRAMMAR.SUFFIXES_LVL1
+EVAL_SUFFIXES_LVL2 = EVAL_GRAMMAR.SUFFIXES_LVL2
+EVAL_SUFFIXES_LVL3 = EVAL_GRAMMAR.SUFFIXES_LVL3
 
-# The default (url-ecoded) white-space.
-WHITESPACES = ["%20"]
+# Raw payload (without tampering)
+RAW_PAYLOAD = ""
 
+# Single whitespace
 SINGLE_WHITESPACE = " "
+
+# The default whitespace, as a space - encoded with the rest of the payload at the end.
+WHITESPACES = [SINGLE_WHITESPACE]
 
 # Reference: http://www.w3.org/Protocols/HTTP/Object_Headers.html#uri
 URI_HTTP_HEADER = "URI"
@@ -408,13 +1120,57 @@ URI_HTTP_HEADER = "URI"
 # Seconds to delay between each HTTP request.
 DELAY = 0
 
-# Seconds to delay the OS response. (Default 1)
-TIMESEC = 1
+# Seconds to delay the OS response.
+TIMESEC = 0
 
-#Level (Default: 1)
+# Minimum safe delay.
+MIN_SAFE_TIMESEC = 5
+
+# Higher minimum delay applied once this run has confirmed the target is unstable.
+MIN_SAFE_TIMESEC_UNSTABLE = 10
+
+# Seconds to delay between each HTTP retry.
+DELAY_RETRY = 1
+
+# Max number of concurrent HTTP requests during data retrieval.
+THREADS = 1
+MAX_THREADS = 10
+# Thread count '-o' raises to, unless '--threads' was given.
+OPTIMIZE_THREADS = 3
+# Whether persistent (Keep-Alive) connections are in use.
+KEEP_ALIVE = False
+# Set when a time-related retrieval could not resolve every character of the output.
+INCOMPLETE_OUTPUT = False
+# Output length above which a time-related retrieval asks before spending a request per character.
+LARGE_OUTPUT_THRESHOLD = 500
+
+# Locks for shared state accessed by concurrent threads.
+PRINT_LOCK = _threading.Lock()
+REQUESTS_LOCK = _threading.Lock()
+
+# Whether the last stdout line is still open (progress refresh / spinner dot).
+PROGRESS_LINE_OPEN = False
+
+# Whether the last stdout line is a progress line that closed itself with its own "(done)". It is
+# finished, so nothing more is written onto it, but the cursor has already left it - which is the
+# line a repeat of it overwrites.
+PROGRESS_LINE_DONE = False
+
+# Dots written to the current spinner line, and where that line stops growing further ones.
+# However many requests a step actually costs, the line itself stays one a terminal never wraps.
+PROGRESS_DOT_COUNT = 0
+MAX_PROGRESS_DOTS = 40
+
 DEFAULT_INJECTION_LEVEL = 1
 COOKIE_INJECTION_LEVEL = 2
 HTTP_HEADER_INJECTION_LEVEL = 3
+
+# Level of tests to perform.
+# The higher the value is, the higher the number of HTTP(s) requests are. (Default: 1)
+INJECTION_LEVEL = 0
+USER_APPLIED_LEVEL = False
+USER_APPLIED_RETRIES = False
+USER_APPLIED_TIMEOUT = False
 PERFORM_BASIC_SCANS = True
 
 # Default Temp Directory
@@ -424,146 +1180,446 @@ TMP_PATH = ""
 WEB_ROOT = ""
 DEFAULT_WEB_ROOT = ""
 CUSTOM_WEB_ROOT = False
+CUSTOM_FILENAME = ""
+
+# Whether '--web-root' was explicitly supplied on the CLI
+USER_APPLIED_WEB_ROOT = False
+USER_APPLIED_INTERPRETER = False
+
+# Whether WEB_ROOT is only a guess (from the server's banner) rather than something actually
+# confirmed - a guess is worth offering first, not worth skipping the directory-choice menu for,
+# since it is wrong often enough that silently trusting it just delays finding that out.
+WEB_ROOT_IS_GUESS = False
+
+# Runs one command through a technique already confirmed on this parameter, set once that happens and
+# called only where the document root is actually needed - a root worked out from the target's own
+# answer costs a request, and a run never reaching the file-based technique should not pay for it.
+WEB_ROOT_PROBE = None
+USER_APPLIED_TIMESEC = False
+USER_APPLIED_TMP_PATH = False
+
+# Whether '--auth-cred'/'--auth-type' were explicitly supplied on the CLI
+USER_APPLIED_COOKIE = ""
+USER_APPLIED_DATA = ""
+USER_APPLIED_AUTH_CRED = False
+USER_APPLIED_AUTH_TYPE = False
 
 # Counting the total of HTTP(S) requests
 TOTAL_OF_REQUESTS = 0
+# Log-file report state.
+LOGGED_FINDINGS_HEADER = False
+LAST_LOGGED_PARAMETER = None
+# The accumulating --report-json data, built only when that option is set.
+REPORT_JSON = None
+
+"""
+What became of the run a JSON report belongs to, so that a reader can tell a scan still going, and
+one cut short, from one that simply found nothing.
+"""
+REPORT_STARTED = ""
+
+"""
+The reports of the targets a run has already finished with, so that a run over several of them
+hands back all of them rather than whichever it happened to end on.
+"""
+REPORT_TARGETS = []
+REPORT_STATUS_RUNNING = "running"
+REPORT_STATUS_COMPLETED = "completed"
+REPORT_STATUS_TIME_LIMIT = "time-limit"
+REPORT_STATUS_TERMINATED = "terminated"
+REPORT_STATUS_FAILED = "failed"
+LAST_LOG_GROUP = "header"
+
+# Said once per target, so a token carried on every request is not announced on every one of them.
+JWT_CHECKED = False
+
+# Put where a token would be, to find out whether the target gates on one at all. Deliberately not a
+# well-formed token - a token that is merely signed wrong is the thing being tested, not the ruler.
+JWT_NON_TOKEN = "not-a-token"
 
 # The max help option length.
 MAX_OPTION_LENGTH = 18
+
+# The options '-h' lists, out of the whole set that '--hh' lists: what a first run is made of.
+BASIC_HELP_ITEMS = (
+  "url", "logfile", "bulkfile", "requestfile", "data", "cookie", "random_agent", "proxy", "tor",
+  "check_tor", "test_parameter", "level", "tech", "eval_sink", "os_cmd", "os_shell", "file_read",
+  "file_write", "batch", "flush_session", "wizard", "version", "verbose"
+)
 
 # Python version.
 PYTHON_VERSION = sys.version.split()[0]
 
 # Enumeration Commands
 # Output PowerShell's version number
-PS_VERSION = "powershell.exe -InputFormat none write-host ([string]$(cmd /c powershell.exe -InputFormat none get-host)[3]).replace('Version','').replace(' ','').substring(1,3)"
+PS_VERSION = "powershell.exe -NoProfile -InputFormat none write-host ($PSVersionTable.PSVersion.ToString(2))"
 
 # Current user
 CURRENT_USER = "whoami"
-WIN_CURRENT_USER = "echo %username%"
+WIN_CURRENT_USER = "echo %USERNAME%"
 
 # The hostname
 HOSTNAME = "hostname"
-WIN_HOSTNAME = "echo %computername%"
+WIN_HOSTNAME = "echo %COMPUTERNAME%"
 
-# Check if current user is root
+# The directory the script itself runs in - what the document root is worked back from
+CURRENT_DIRECTORY = "pwd"
+WIN_CURRENT_DIRECTORY = "echo %CD%"
+
+# Check if Current user is privileged
+# Unix-like: root
 IS_ROOT = "echo $(id -u)"
-# Check if current user is admin
+# Windows: admin
 IS_ADMIN = "powershell.exe -InputFormat none [Security.Principal.WindowsBuiltinRole]::Administrator"
 
 # Operation System.
 RECOGNISE_OS = "uname -s"
 WIN_RECOGNISE_OS = "ver"
 
-# Distribution Description / Release 
+# Distribution Description / Release
 DISTRO_INFO = "echo $(lsb_release -sir)"
 
 # Hardware platform.
 RECOGNISE_HP = "uname -m"
 WIN_RECOGNISE_HP = "echo %PROCESSOR_ARCHITECTURE%"
 
+# What the target answered the hardware platform question with, kept as it came back.
+TARGET_ARCH = ""
+
 # File System access options
 # Read file
 FILE_READ = "cat "
-WIN_FILE_READ = "type "
+# Used by "download", so the file's exact bytes survive.
+FILE_READ_B64 = "base64 <"
+WIN_FILE_READ_B64 = "powershell.exe -c \"[Convert]::ToBase64String([IO.File]::ReadAllBytes('"
+FILE_WRITE_OPERATOR = " >"
+FILE_APPEND_OPERATOR = " >>"
+WIN_FILE_WRITE_OPERATOR = "powershell.exe Set-Content "
+WIN_FILE_READ = "powershell.exe get-Content "
+
+# List file
+FILE_LIST = "ls "
+FILE_LIST_WIN = "powershell.exe Test-Path -Path "
+
+CERTUTIL_DECODE_CMD = "certutil -decode "
 
 # Write file
-FILE_WRITE = "echo "
-
-# Write file
-FILE_UPLOAD = "wget "
+FILE_WRITE = "printf "
 
 # /etc/passwd
 PASSWD_FILE = "/etc/passwd"
 
-SYS_USERS = "awk -F ':' '{print $1}{print $3}{print $6}' " + PASSWD_FILE 
-EVAL_SYS_USERS = "awk -F ':' '{print \$1}{print \$3}{print \$6}' " + PASSWD_FILE 
+SYS_USERS = "awk -F ':' '{print $1}{print $3}{print $6}' " + PASSWD_FILE
 
 # Exports users of localgroup
-WIN_SYS_USERS = "powershell.exe -InputFormat none write-host (([string]$(net user)[4..($(net user).length-3)])"
+WIN_SYS_USERS = "powershell.exe -InputFormat none write-host (([string]$(net user)[4..($(net user).length-3)]))"
+
+# What the target says instead of a list when the account running it may not ask for one. Seeing a
+# built-in name is not the test - they can be renamed or removed - so this is what tells a refusal
+# from a perfectly good enumeration of accounts we happen not to recognise.
+WIN_ACCESS_DENIED = ["Access is denied", "System error 5", "not have permission", "Logon failure"]
 
 # /etc/shadow
 SHADOW_FILE = "/etc/shadow"
-SYS_PASSES = FILE_READ + SHADOW_FILE 
+SYS_PASSES = FILE_READ + SHADOW_FILE
+
+WIN_REPLACE_WHITESPACE = r"-replace('\s+',' '))"
+
+# Windows registry access
+WIN_REG_QUERY = "reg query "
+WIN_REG_ADD = "reg add "
+WIN_REG_DEL = "reg delete "
+REG_ACCESS_DENIED = ["Access is denied", "ERROR: Access is denied", "requires elevation"]
+# Listed the way the denied phrases above are, and without the "ERROR: " prefix or the full stop
+# 'reg' writes around it, so the phrase is found in an answer a shell wrapped or truncated.
+REG_VALUE_NOT_FOUND = ["The system was unable to find the specified registry key or value"]
+REG_VALUE_TYPES = ("REG_SZ", "REG_EXPAND_SZ", "REG_DWORD", "REG_QWORD", "REG_BINARY", "REG_MULTI_SZ", "REG_NONE")
 
 # Accepts 'YES','YE','Y','yes','ye','y'
 CHOICE_YES = ['YES','YE','Y','yes','ye','y']
 
 # Accepts 'NO','N','no','n'
-CHOICE_NO = ['NO','N','no','n']
+CHOICE_NO = ['NO','no','N','n']
 
 # Accepts 'QUIT','Q','quit','q'
-CHOICE_QUIT = ['QUIT','Q','quit','q']
+CHOICE_QUIT = ['QUIT','quit','Q','q']
 
 # Accepts 'W','w','U','u','Q','q'
-CHOICE_OS = ['W','w','U','u','Q','q']
+CHOICE_OS = ['W','w','U','u','Q','q','N','n']
 
-# Accepts 'C','c','S','s','Q','q','a','A','n','N'
-CHOICE_PROCEED = ['C','c','S','s','Q','q','a','A','n','N']
+# Accepts 'C','c','S','s','Q','q','A','a'
+CHOICE_PROCEED = ['C','c','S','s','Q','q','A','a']
+
+# Remembers the answer to the "unexpected time delays" prompt.
+UNSTABLE_REQUEST_CHOICE = None
+
+# Remembers the answer to the "'/bin/' path prefix" prompt.
+USE_BIN_SUBDIR_CHOICE = None
+
+# How many seconds "Continue" has already added to timesec, capped by MAX_UNSTABLE_TIMESEC_BUMP.
+UNSTABLE_REQUEST_BUMPS = 0
+
+# Maximum cumulative seconds "Continue" may add to timesec over the run.
+MAX_UNSTABLE_TIMESEC_BUMP = 5
 
 # Available alternative shells
-AVAILABLE_SHELLS = ["python"]
+AVAILABLE_INTERPRETERS = ["python"]
 
-# Available injection techniques.
-AVAILABLE_TECHNIQUES = [ "c", "e", "t", "f" ]
+"""
+The short names a language is just as often written as, and what each one means.
 
+'--eval' and '--interpreter' both take a language, so both read the same table - naming one of them
+'py' should not be an error where naming it 'python' is not.
+"""
+LANGUAGE_ALIASES = {"py": "python", "pl": "perl", "rb": "ruby", "js": "javascript", "ps": "powershell"}
+
+# The name a language was given by, resolved to the one commix knows it as.
+def resolve_language(name):
+  if not name:
+    return name
+  name = str(name).strip().lower()
+  return LANGUAGE_ALIASES.get(name, name)
+
+# Available injection techniques. Out-of-band is not one of them - it is the '--oob' switch, so that
+# it can serve the modules too, which never go through '--technique'.
+AVAILABLE_TECHNIQUES = ['r','b','t','f']
+# What each one is called where a message names it. Keyed by the letters of the list above and read
+# through that list, so a technique cannot be added there and left out of what a run says it did
+# not test - which is how the boolean-based one came to be missing from that sentence.
+TECHNIQUE_LETTER_NAMES = {'r': "results-based", 'b': "boolean-based", 't': "time-based", 'f': "file-based"}
+# The letter that used to name the evaluation sink before '--eval' did, the technique that reaches
+# that sink today, and the one whose technique carries whichever sink it is given.
+EVAL_TECHNIQUE_LETTER = 'e'
+EVAL_CAPABLE_TECHNIQUES = ('r', 'b', 't', 'f')
+OOB_TECHNIQUE_LETTER = 'o'
+# The languages the evaluation sink knows how to reach, and the word standing for all of them.
+SUPPORTED_EVAL_LANGUAGES = _eval.supported()
+
+"""
+Point the code injection grammar at one language, so that everything derived from it - the probe,
+the boundaries, the functions that run a command - is that language's rather than the default's.
+"""
+LEVEL_SCOPED = ("SEPARATORS", "PREFIXES", "SUFFIXES", "EVAL_PREFIXES", "EVAL_SUFFIXES",
+                "EVAL_SEPARATORS", "EXECUTION_FUNCTIONS")
+
+"""
+Narrow the boundary lists to the level being tested, taking each from its own '_LVL<n>' source.
+
+Called again whenever those sources change - pointing the grammar at another language rewrites them,
+and the lists the payloads are actually built from are these, not the sources.
+"""
+def apply_injection_level(level=None):
+  suffix = {DEFAULT_INJECTION_LEVEL: "LVL1", COOKIE_INJECTION_LEVEL: "LVL2",
+            HTTP_HEADER_INJECTION_LEVEL: "LVL3"}.get(INJECTION_LEVEL if level is None else level)
+  if not suffix:
+    return False
+  for name in LEVEL_SCOPED:
+    source = globals()[name + "_" + suffix]
+    globals()[name] = sorted(set(source), key=source.index)
+  return True
+
+# Speak a different language: every payload is built from the grammar set here.
+def set_eval_grammar(language):
+  global EVAL_GRAMMAR, EVAL_PROBE_PAYLOADS, EVAL_PROBE_REGEX, EVAL_WARNINGS
+  global EXECUTION_FUNCTIONS_LVL1, EXECUTION_FUNCTIONS_LVL2, EXECUTION_FUNCTIONS_LVL3
+  global EVAL_SEPARATORS_LVL1, EVAL_SEPARATORS_LVL2, EVAL_SEPARATORS_LVL3
+  global EVAL_PREFIXES_LVL1, EVAL_PREFIXES_LVL2, EVAL_PREFIXES_LVL3
+  global EVAL_SUFFIXES_LVL1, EVAL_SUFFIXES_LVL2, EVAL_SUFFIXES_LVL3
+  EVAL_GRAMMAR = _eval.grammar(language)
+  EVAL_PROBE_PAYLOADS = EVAL_GRAMMAR.PROBE_PAYLOADS
+  EVAL_PROBE_REGEX = EVAL_GRAMMAR.PROBE_REGEX
+  EVAL_WARNINGS = EVAL_GRAMMAR.WARNINGS
+  EXECUTION_FUNCTIONS_LVL1 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL1
+  EXECUTION_FUNCTIONS_LVL2 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL2
+  EXECUTION_FUNCTIONS_LVL3 = EVAL_GRAMMAR.EXECUTION_FUNCTIONS_LVL3
+  EVAL_SEPARATORS_LVL1 = EVAL_GRAMMAR.SEPARATORS_LVL1
+  EVAL_SEPARATORS_LVL2 = EVAL_GRAMMAR.SEPARATORS_LVL2
+  EVAL_SEPARATORS_LVL3 = EVAL_GRAMMAR.SEPARATORS_LVL3
+  EVAL_PREFIXES_LVL1 = EVAL_GRAMMAR.PREFIXES_LVL1
+  EVAL_PREFIXES_LVL2 = EVAL_GRAMMAR.PREFIXES_LVL2
+  EVAL_PREFIXES_LVL3 = EVAL_GRAMMAR.PREFIXES_LVL3
+  EVAL_SUFFIXES_LVL1 = EVAL_GRAMMAR.SUFFIXES_LVL1
+  EVAL_SUFFIXES_LVL2 = EVAL_GRAMMAR.SUFFIXES_LVL2
+  EVAL_SUFFIXES_LVL3 = EVAL_GRAMMAR.SUFFIXES_LVL3
+  # The lists the payloads are built from are narrowed from the sources just rewritten, so they are
+  # taken again - otherwise the language named on the command line never reaches a single payload.
+  apply_injection_level()
+EVAL_ALL_LANGUAGES = 'all'
+# Said once per run, however many parameters the heuristic sees an evaluation sink on.
+EVAL_SUGGESTED = False
+# The same, the other way round: said once however many parameters answer as a command shell
+# while '--eval' has code injection named on the command line.
+COMMAND_SUGGESTED = False
+
+# Supported injection types
+class INJECTION_TYPE(object):
+  RESULTS_BASED_CI = "classic command injection"
+  RESULTS_BASED_CE = "classic code injection"
+  BLIND = "blind command injection"
+  BLIND_CE = "blind code injection"
+
+# The injection types that name a code-evaluation sink rather than a command one. What was found
+# is recorded as a type, so a stored finding is read back through this rather than through the
+# technique that found it - the same technique serves either sink.
+EVAL_INJECTION_TYPES = (INJECTION_TYPE.RESULTS_BASED_CE, INJECTION_TYPE.BLIND_CE)
+
+# Spellings that older sessions hold, before the file-based technique was reported as blind.
+LEGACY_INJECTION_TYPES = {
+  "semi-blind command injection" : INJECTION_TYPE.BLIND,
+  "semi-blind code injection" : INJECTION_TYPE.BLIND_CE,
+  "results-based command injection" : INJECTION_TYPE.RESULTS_BASED_CI,
+  "results-based code injection" : INJECTION_TYPE.RESULTS_BASED_CE
+}
+
+# Supported injection techniques
+class INJECTION_TECHNIQUE(object):
+  RESULTS_BASED = "results-based command injection technique"
+  DYNAMIC_CODE = "dynamic code evaluation technique"
+  BOOLEAN_BASED = "boolean-based command injection technique"
+  TIME_BASED = "time-based command injection technique"
+  FILE_BASED = "file-based injection technique"
+  TEMP_FILE_BASED = "tempfile-based injection technique"
+  OOB = "out-of-band command injection technique"
+
+# Canonical order techniques are tested and reported in.
+TECHNIQUE_ORDER = [INJECTION_TECHNIQUE.RESULTS_BASED, INJECTION_TECHNIQUE.DYNAMIC_CODE, INJECTION_TECHNIQUE.BOOLEAN_BASED, INJECTION_TECHNIQUE.TIME_BASED, INJECTION_TECHNIQUE.FILE_BASED, INJECTION_TECHNIQUE.TEMP_FILE_BASED, INJECTION_TECHNIQUE.OOB]
+
+# The techniques each injection type is reached by - '--type' names the type, and the run tests
+# every technique that shows a result that way.
+AVAILABLE_TYPES = {"c" : "r", "b" : "btf"}
+
+# The technique letter follows the first letter of its name, so a renamed technique renames its
+# letter with it - and a session written before the rename still has to find its way to the same one.
+LEGACY_TECHNIQUE_NAMES = {
+  "classic command injection technique" : INJECTION_TECHNIQUE.RESULTS_BASED
+}
+LEGACY_TECHNIQUE_LETTERS = {"c" : "r"}
+
+USER_APPLIED_TECHNIQUE = False
 SKIP_TECHNIQUES = False
 
-# User Agent List
-USER_AGENT_LIST = [
-        # Opera
-        "Opera/8.0 (X11; Linux i686; U; en)",
-        "Opera/9.01 (X11; FreeBSD 6 i386; U; en)"
-        "Opera/8.51 (FreeBSD 5.1; U; en)",
-        "Opera/8.51 (Macintosh; PPC Mac OS X; U; de)",
-        "Opera/9.00 (Macintosh; PPC Mac OS X; U; es)",
-        "Opera/12.80 (Windows NT 5.1; U; en) Presto/2.10.289 Version/12.02",
-        # Mozilla Firefox
-        "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20131331 Firefox/31.0",
-        "Mozilla/5.0 (Windows; U; Windows NT 5.1; fr; rv:1.8.1.13) Gecko/20080311 Firefox/2.0.0.13 (.NET CLR 3.0.04506.31)",
-        "Mozilla/5.0 (X11; Linux i686; rv:21.0) Gecko/20100101 Firefox/21.0",
-        "Mozilla/5.0 (MSIE 7.0; Macintosh; U; SunOS; X11; gu; SV1; InfoPath.2; .NET CLR 3.0.04506.31; .NET CLR 3.0.04506.648)",
-        "Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; AS; rv:11.0) like Gecko",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.9 Safari/536.5",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.6; rv:9.0) Gecko/20100101 Firefox/9.0",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_8) AppleWebKit/534.57.2 (KHTML, like Gecko) Version/4.0.5 Safari/531.22.7",
-        "Mozilla/5.0 (Windows NT 5.1; rv:31.0) Gecko/20100101 Firefox/31.0",
-        "Mozilla/5.0 (X11; U; Linux i686; zh-CN; rv:1.9.1.6) Gecko/20091216 Fedora/3.5.6-1.fc11 Firefox/3.5.6 GTB6",
-        "Mozilla/5.0 (X11; U; Linux i686 (x86_64); en-US; rv:1.9.1b3) Gecko/20090315 Firefox/3.1b3",
-        "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:21.0) Gecko/20131401 Firefox/31.0",
-        "Mozilla/5.0 (Windows NT 5.1) AppleWebKit/534.34 (KHTML, like Gecko) Dooble/1.40 Safari/534.34",
-        # Oldies 
-        "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; de) Opera 8.0",
-        "Mozilla/4.0 (compatible; MSIE 7.0b; Windows NT 6.0)",
-        "Mozilla/4.0 (compatible; MSIE 7.0b; Windows NT 5.1; .NET CLR 1.1.4322; InfoPath.1; .NET CLR 2.0.50727)",
-        "mozilla/3.0 (Windows NT 6.1; rv:2.0.1) Gecko/20100101 Firefox/5.0.1",
-]
+# Out-of-band (OAST) support.
+OOB_PROVIDER_INTERACTSH = "interactsh"
+OOB_INTERACTSH_DOMAIN = "oast.fun"
+# The rest of ProjectDiscovery's own public interactsh pool, tried in turn where the default does
+# not answer - never applied over '--oob-server', since a self-hosted one is not a pool to fall
+# back out of.
+OOB_INTERACTSH_FALLBACK_DOMAINS = ("oast.pro", "oast.live", "oast.site", "oast.online", "oast.me")
+OOB_SERVER = ""
+OOB_TOKEN = ""
+OOB_TIMEOUT = 15
+OOB_POLL_INTERVAL = 5
+# How often a wait asks the server itself, instead of sitting out the interval above. An interaction
+# is on the server long before the next poll would bring it in, and a wait is the part of a run that
+# has something to wait for - so it asks harder than the idle poller does.
+OOB_WAIT_POLL_INTERVAL = 2
+OOB_CHANNEL = None
+OOB_TRANSPORT = ""
+# The client the heuristic saw answer, tried first by the technique that follows it.
+OOB_HEURISTIC_TRANSPORT = ""
 
-# Mobile User Agents
-MOBILE_USER_AGENT_LIST = [
-        "Mozilla/5.0 (BB10; Kbd) AppleWebKit/537.35+ (KHTML, like Gecko) Version/10.3.3.2205 Mobile Safari/537.35+",
-        "Mozilla/5.0 (Linux; Android 7.0; SM-G931V Build/NRD90M) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3171.125 Mobile Safari/537.36",
-        "Mozilla/4.0 (compatible; MSIE 4.01; Windows CE; PPC; 240x320; HP iPAQ h6310)",
-        "Mozilla/5.0 (Linux; Android 8.0.0; HTC 10 Build/OPR1.170623.027) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Mobile Safari/537.36",
-        "Mozilla/5.0 (Linux; Android 4.4.4; HUAWEI H891L Build/HuaweiH891L) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/33.0.0.0 Mobile Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Mobile/15A372 Safari/604.1",
-        "Mozilla/5.0 (Windows Phone 10.0; Android 6.0.1; Microsoft; Lumia 950) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Mobile Safari/537.36 Edge/15.14977",
-        "Mozilla/5.0 (Linux; Android 4.1.1; Nexus 7 Build/JRO03D) AppleWebKit/535.19 (KHTML, like Gecko) Chrome/18.0.1025.166 Safari/535.19",
-        "Mozilla/5.0 (SymbianOS/9.4; Series60/5.0 NokiaN97-1/10.0.012; Profile/MIDP-2.1 Configuration/CLDC-1.1; en-us) AppleWebKit/525 (KHTML, like Gecko) WicKed/7.1.12344",
-        "Mozilla/5.0 (Linux; Android 8.0.0; Pixel Build/OPR3.170623.013) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.111 Mobile Safari/537.36",
-        "Mozilla/5.0 (Linux; U; Android 4.4.4; en-gb; MI 3W Build/KTU84P) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/39.0.0.0 Mobile Safari/537.36 XiaoMi/MiuiBrowser/2.1.1",
-]
+# How many times a command's output is asked for over a name lookup before giving up on it.
+OOB_DNS_ATTEMPTS = 2
+# The HTTP clients the heuristic asked and never heard from, through a payload a name lookup proved
+# had run. The sweep leaves those out and leads with the lookup instead of paying for them again.
+OOB_HEURISTIC_HTTP_SILENT = []
+OOB_EVAL = False
+# Payloads reach the server over the same scheme it is polled on, so that command output is not
+# sent in the clear unless the user asked for a plain-HTTP server.
+OOB_SCHEME = "https"
+# The port the payload's URL carries, when the out-of-band server is not on the scheme's own one.
+OOB_PORT = None
+# An out-of-band payload never reads the response, so a target that takes too long to answer has
+# not failed - the interaction arrives on its own. Set once the channel is up.
+OOB_IGNORE_TIMEOUT = False
+# Seconds to wait on a probe's response before moving on. Some clients block for tens of seconds
+# ('certutil' well past a minute), which would make a sweep take hours for nothing.
+OOB_PROBE_TIMEOUT = 5
+# Seconds the heuristic keeps waiting for an HTTP client once a name lookup has already answered,
+# so the sweep is handed the client that can carry a command's output back whole.
+OOB_HTTP_GRACE = 4
+# How many of a sweep's first combinations are polled for eagerly, instead of waiting out the
+# interval. The likeliest boundary comes first, so this usually ends the sweep after a few probes.
+OOB_EAGER_POLLS = 3
+# What the 'shellshock' module reports and stores its findings under, read back by the session the same way.
+SHELLSHOCK_TECHNIQUE = "shellshock module"
+
+SHELLSHOCK_OOB = False
+
+# Set where the module is confirmed but the target hands nothing back, so the output is read off the
+# page the way the boolean-based technique reads it - a false answer stops the script before it runs.
+SHELLSHOCK_BOOLEAN = False
+
+# The tamper-count warning is per run, not per technique announcement.
+TAMPER_WARNING_SHOWN = False
+
+"""
+The TLS context for target requests - a target's certificate is routinely self-signed or expired.
+"""
+def unverified_context():
+  import ssl
+  context = ssl._create_unverified_context()
+  from src.core.requests import pki
+  return pki.apply_client_certificate(context)
+
+"""
+The TLS context for commix's own infrastructure calls, which are verified.
+"""
+def verified_context():
+  import os, ssl
+  context = ssl.create_default_context()
+  paths = ssl.get_default_verify_paths()
+  if not (paths.cafile or paths.capath):
+    for bundle in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+                   "/etc/pki/tls/certs/ca-bundle.crt", "/usr/local/etc/openssl/cert.pem"):
+      if os.path.exists(bundle):
+        return ssl.create_default_context(cafile=bundle)
+  return context
+
+# Raised by checks.handle_detection_interrupt() to unwind to the right point
+# in the detection loop.
+class SkipTechniqueException(Exception):
+  pass
+
+class EndDetectionPhaseException(Exception):
+  pass
+
+class NextParameterException(Exception):
+  pass
+
+class NextTargetException(Exception):
+  pass
+
+# Raised after a verbosity change mid-detection, to redo the current technique from the top.
+class RetryTechniqueException(Exception):
+  pass
 
 # Default Scheme
 SCHEME = ""
 
-# Privoxy Proxy
-PRIVOXY_IP = "127.0.0.1"
-PRIVOXY_PORT = "8118"
+# TOR HTTP Proxy
+TOR_HTTP_PROXY_IP = "127.0.0.1"
+TOR_HTTP_PROXY_PORT = "8118"
+# Answered as JSON, so that what is read back is a stated fact rather than a phrase on a page.
+CHECK_TOR_API_PAGE = "https://check.torproject.org/api/ip"
+
+# The proxy types '--tor-type' accepts, and the ports each one is looked for on.
+class PROXY_TYPE(object):
+  HTTP = "HTTP"
+  SOCKS4 = "SOCKS4"
+  SOCKS5 = "SOCKS5"
+
+TOR_TYPES = (PROXY_TYPE.HTTP, PROXY_TYPE.SOCKS4, PROXY_TYPE.SOCKS5)
+# SOCKS is what the Tor service itself listens as, so it is what a default run asks for - an HTTP
+# proxy in front of Tor (e.g. Privoxy) is a second piece of software, and its own thing to get wrong.
+DEFAULT_TOR_TYPE = PROXY_TYPE.SOCKS5
+DEFAULT_TOR_SOCKS_PORTS = (9050, 9150)
+DEFAULT_TOR_HTTP_PORTS = (8123, 8118)
 
 # Cookie injection
-COOKIE_INJECTION = False
+COOKIE_INJECTION = None
 
+HTTP_HEADERS_INJECTION = None
 # User-Agent injection
 USER_AGENT_INJECTION = None
 
@@ -575,10 +1631,10 @@ HOST_INJECTION = None
 
 # Custom HTTP Headers injection
 CUSTOM_HEADER_INJECTION = False
-CUSTOM_HEADER_NAME = "" 
-
-# Valid URL format check
-VALID_URL_FORMAT = "https?://(?:www)?(?:[\w-]{2,255}(?:\.\w{2,6}){1,2})(?:/[\w&%?#-]{1,310})?"
+CUSTOM_HEADERS_NAMES = []
+CUSTOM_HEADER_CHECK = ""
+CUSTOM_HEADER_NAME = ""
+CUSTOM_HEADER_VALUE = ""
 
 VALID_URL = True
 
@@ -586,11 +1642,17 @@ VALID_URL = True
 SHELL_OPTIONS = [
         "?",
         "quit",
+        "exit",
         "back",
         "os_shell",
         "reverse_tcp",
         "bind_tcp",
+        "use",
+        "run",
         "set",
+        "show",
+        "download",
+        "upload",
 ]
 
 # Accepted reverse tcp shell menu options
@@ -600,16 +1662,22 @@ SET_OPTIONS = [
         "LPORT",
         "SRVPORT",
         "URIPATH",
+        "HANDLER",
 ]
 
-# Cookie delimiter
-COOKIE_DELIMITER = ";"
+# Delimiter used to separate individual cookies in the Cookie HTTP header
+COOKIE_PARAM_DELIMITER = ";"
+# Seconds spent waiting for the file of the '--live-cookies' option to hold something.
+LIVE_COOKIES_TIMEOUT = 120
 
 # Split parameter value
-PARAMETER_SPLITTING_REGEX = r'[,]'
+PARAMETER_SPLITTING_REGEX = ","
 
-# Cookie delimiter
-PARAMETER_DELIMITER = "&"
+# Delimiter used to separate parameters in POST request body
+POST_DATA_PARAM_DELIMITER = "&"
+
+# Delimiter used to separate query parameters in a URL
+URL_PARAM_DELIMITER = "&"
 
 DEFAULT_CODEC = "utf8"
 
@@ -620,125 +1688,30 @@ try:
 except LookupError:
   DEFAULT_PAGE_ENCODING = DEFAULT_CODEC
 
-# Character Sets List. 
-# A complete list of the standard encodings Python supports.
-ENCODING_LIST = [
-  "iso-8859-1",
-  "ascii",
-  "big5",
-  "big5hkscs",
-  "cp037",
-  "cp424",
-  "cp437",
-  "cp500",
-  "cp720",
-  "cp737",
-  "cp775",
-  "cp850",
-  "cp852",
-  "cp855",
-  "cp856",
-  "cp857",
-  "cp858",
-  "cp860",
-  "cp861",
-  "cp862",
-  "cp863",
-  "cp864",
-  "cp865",
-  "cp866",
-  "cp869",
-  "cp874",
-  "cp875",
-  "cp932",
-  "cp949",
-  "cp950",
-  "cp1006",
-  "cp1026",
-  "cp1140",
-  "cp1250",
-  "cp1251",
-  "cp1252",
-  "cp1253",
-  "cp1254",
-  "cp1255",
-  "cp1256",
-  "cp1257",
-  "cp1258",
-  "euc-jp",
-  "euc-jis-2004",
-  "euc-jisx0213",
-  "euc-kr",
-  "gb2312",
-  "gbk",
-  "gb18031",
-  "hz",
-  "iso2022-jp",
-  "iso2022-jp-1",
-  "iso2022-jp-2",
-  "iso2022-jp-2004",
-  "iso2022-jp-3",
-  "iso2022-jp-ext",
-  "iso2022-kr",
-  "latin-1",
-  "iso8859-2",
-  "iso8859-3",
-  "iso8859-4",
-  "iso8859-5",
-  "iso8859-6",
-  "iso8859-7",
-  "iso8859-8",
-  "iso8859-9",
-  "iso8859-10",
-  "iso8859-13",
-  "iso8859-14",
-  "iso8859-15",
-  "iso8859-16",
-  "johab",
-  "koi8-r",
-  "koi8-u",
-  "mac-cyrillic",
-  "mac-greek",
-  "mac-iceland",
-  "mac-latin2",
-  "mac-roman",
-  "mac-turkish",
-  "ptcp154",
-  "shift-jis",
-  "shift-jis-2004",
-  "shift-jisx0213",
-  "utf-32",
-  "utf-32-be",
-  "utf-32-le",
-  "utf-16",
-  "utf-16-be",
-  "utf-16-le",
-  "utf-7",
-  "utf-8",
-  "utf-8-sig"
- ]
+# Whether this platform can actually read a charset, which a hand-kept list of names cannot say.
+def known_encoding(name):
+  try:
+    return bool(name) and bool(codecs.lookup(str(name).strip()))
+  except (LookupError, TypeError, ValueError):
+    return False
 
-# Default value for HTTP Accept-Encoding header
-HTTP_ACCEPT_ENCODING_HEADER_VALUE = "gzip, deflate"
+"""
+Whether a charset leaves plain ASCII alone.
 
-# Default server banner
-SERVER_BANNER = ""
-
-# Server banners list
-SERVER_BANNERS = [
-    "Microsoft-IIS",
-    "Apache",
-    r"Nginx/([\w\.]+)",
-    r"GWS/([\w\.]+)",
-    r"lighttpd/([\w\.]+)",
-    r"openresty/([\w\.]+)",
-    r"LiteSpeed/([\w\.]+)",
-    r"Sun-ONE-Web-Server/([\w\.]+)"
-]
+What a payload is found by is a marker of ASCII letters, and a page only claims its encoding - a
+page that claims one of the wide ones and serves something else is read as gibberish, the marker
+with it, and the parameter is reported as not injectable. The claim is only worth acting on where
+being wrong about it cannot cost that much: for these, being wrong costs the accented characters.
+"""
+def ascii_transparent_encoding(name):
+  try:
+    return "commix".encode(str(name).strip()) == b"commix"
+  except (LookupError, TypeError, ValueError, UnicodeEncodeError):
+    return False
 
 # Server banners list
 SERVER_OS_BANNERS = [
-    r"(Microsoft|Windows|Win32)",
+    r"(Microsoft|Windows|Win[\w\.]+)",
     "Debian",
     "Ubuntu",
     "Fedora",
@@ -752,30 +1725,32 @@ SERVER_OS_BANNERS = [
     "Gentoo",
     r"Mac[\-\_\ ]?OSX",
     r"Red[\-\_\ ]?Hat",
-    "Unix"
+    "Unix",
 ]
 
 # Extensions skipped by crawler
 CRAWL_EXCLUDE_EXTENSIONS = [
-  "3ds", "3g2", "3gp", "7z", "DS_Store", "a", "aac", "adp", "ai", "aif", "aiff", "apk", "ar", 
-  "asf", "au", "avi", "bak", "bin", "bk", "bmp", "btif", "bz2", "cab", "caf", "cgm", "cmx", "cpio", "cr2", "dat", "deb", 
-  "djvu", "dll", "dmg", "dmp", "dng", "doc", "docx", "dot", "dotx", "dra", "dsk", "dts", "dtshd", "dvb", "dwg", "dxf", 
-  "ear", "ecelp4800", "ecelp7470", "ecelp9600", "egg", "eol", "eot", "epub", "exe", "f4v", "fbs", "fh", "fla", "flac", 
-  "fli", "flv", "fpx", "fst", "fvt", "g3", "gif", "gz", "h261", "h263", "h264", "ico", "ief", "image", "img", "ipa", 
-  "iso", "jar", "jpeg", "jpg", "jpgv", "jpm", "jxr", "ktx", "lvp", "lz", "lzma", "lzo", "m3u", "m4a", "m4v", "mar", 
-  "mdi", "mid", "mj2", "mka", "mkv", "mmr", "mng", "mov", "movie", "mp3", "mp4", "mp4a", "mpeg", "mpg", "mpga", "mxu", 
-  "nef", "npx", "o", "oga", "ogg", "ogv", "otf", "pbm", "pcx", "pdf", "pea", "pgm", "pic", "png", "pnm", "ppm", "pps", 
-  "ppt", "pptx", "ps", "psd", "pya", "pyc", "pyo", "pyv", "qt", "rar", "ras", "raw", "rgb", "rip", "rlc", "rz", "s3m", 
-  "s7z", "scm", "scpt", "sgi", "shar", "sil", "smv", "so", "sub", "swf", "tar", "tbz2", "tga", "tgz", "tif", "tiff", 
-  "tlz", "ts", "ttf", "uvh", "uvi", "uvm", "uvp", "uvs", "uvu", "viv", "vob", "war", "wav", "wax", "wbmp", "wdp", "weba", 
-  "webm", "webp", "whl", "wm", "wma", "wmv", "wmx", "woff", "woff2", "wvx", "xbm", "xif", "xls", "xlsx", "xlt", "xm", "xpi", 
+  "3ds", "3g2", "3gp", "7z", "DS_Store", "a", "aac", "adp", "ai", "aif", "aiff", "apk", "ar",
+  "asf", "au", "avi", "bak", "bin", "bk", "bmp", "btif", "bz2", "cab", "caf", "cgm", "cmx", "cpio", "cr2", "dat", "deb",
+  "djvu", "dll", "dmg", "dmp", "dng", "doc", "docx", "dot", "dotx", "dra", "dsk", "dts", "dtshd", "dvb", "dwg", "dxf",
+  "ear", "ecelp4800", "ecelp7470", "ecelp9600", "egg", "eol", "eot", "epub", "exe", "f4v", "fbs", "fh", "fla", "flac",
+  "fli", "flv", "fpx", "fst", "fvt", "g3", "gif", "gz", "h261", "h263", "h264", "ico", "ief", "image", "img", "ipa",
+  "iso", "jar", "jpeg", "jpg", "jpgv", "jpm", "jxr", "ktx", "lvp", "lz", "lzma", "lzo", "m3u", "m4a", "m4v", "mar",
+  "mdi", "mid", "mj2", "mka", "mkv", "mmr", "mng", "mov", "movie", "mp3", "mp4", "mp4a", "mpeg", "mpg", "mpga", "mxu",
+  "nef", "npx", "o", "oga", "ogg", "ogv", "otf", "pbm", "pcx", "pdf", "pea", "pgm", "pic", "png", "pnm", "ppm", "pps",
+  "ppt", "pptx", "ps", "psd", "pya", "pyc", "pyo", "pyv", "qt", "rar", "ras", "raw", "rgb", "rip", "rlc", "rz", "s3m",
+  "s7z", "scm", "scpt", "sgi", "shar", "sil", "smv", "so", "sub", "swf", "tar", "tbz2", "tga", "tgz", "tif", "tiff",
+  "tlz", "ts", "ttf", "uvh", "uvi", "uvm", "uvp", "uvs", "uvu", "viv", "vob", "war", "wav", "wax", "wbmp", "wdp", "weba",
+  "webm", "webp", "whl", "wm", "wma", "wmv", "wmx", "woff", "woff2", "wvx", "xbm", "xif", "xls", "xlsx", "xlt", "xm", "xpi",
   "xpm", "xwd", "xz", "z", "zip", "zipx"
 ]
 
 TARGET_APPLICATION = ""
+# The version the application named for itself, where it named one.
+TARGET_APPLICATION_VERSION = ""
 # Unsupported target application(s) [1]
 # [1] https://github.com/commixproject/commix/wiki/Target-applications
-UNSUPPORTED_TARGET_APPLICATION = [ 
+UNSUPPORTED_TARGET_APPLICATION = [
     ""
 ]
 
@@ -787,11 +1762,15 @@ SHOW_LOGS_MSG = False
 
 # Enumeration options
 ENUMERATION_DONE = False
-ENUMERATE_AGAIN = False
 
 # FIle access options
 FILE_ACCESS_DONE = False
-FILE_ACCESS_AGAIN = False
+
+# Registry access options
+REGISTRY_ACCESS_DONE = False
+
+# Set when '--file-dest' targets the "/tmp/" directory, to switch straight to the tempfile-based technique.
+CALL_TMP_BASED = False
 
 # XML Data
 IS_XML = False
@@ -801,11 +1780,56 @@ XML_RECOGNITION_REGEX = r'(?s)\A\s*<[^>]+>(.+>)?\s*\Z'
 
 # JSON Data
 IS_JSON = False
+IS_VALID_JSON = False
+# Whether the URL fragment being dropped has already been reported.
+FRAGMENT_IGNORED = False
+# Whether repeated JSON keys have already been reported.
+DUPLICATE_JSON_KEYS_WARNED = False
+
+# Indentation and separators of the JSON body as supplied, so it is rebuilt the way it arrived.
+JSON_FORMATTING = (2, None)
+
+# Whitespace between the XML tags as supplied, so the body is rebuilt the way it arrived.
+XML_TAG_SEPARATORS = []
+
+# Parameters holding session or framework state: injecting into one of these does not test the
+# application, it logs the session out or makes the request invalid before it is even handled.
+IGNORE_PARAMETERS = ("__VIEWSTATE", "__VIEWSTATEENCRYPTED", "__VIEWSTATEGENERATOR", "__EVENTARGUMENT",
+                     "__EVENTTARGET", "__EVENTVALIDATION", "__SCROLLPOSITIONX", "__SCROLLPOSITIONY",
+                     "__PREVIOUSPAGE", "ASPSESSIONID", "ASP.NET_SESSIONID", "JSESSIONID", "PHPSESSID",
+                     "SESSID", "CFID", "CFTOKEN")
 
 # Infixes used for automatic recognition of parameters carrying anti-CSRF tokens
-CSRF_TOKEN_PARAMETER_INFIXES = ("csrf", "xsrf", "token")
+CSRF_TOKEN_PARAMETER_INFIXES = ("csrf", "xsrf", "token", "nonce")
+
+# Largest chunk built by the '--chunked' switch, small enough to break up what a filter looks for.
+MAX_CHUNK_SIZE = 9
+# Tokens a chunk is not allowed to hold whole, so none of them is ever visible in a single chunk.
+CHUNKED_SPLIT_KEYWORDS = (
+  "cat", "echo", "ping", "wget", "curl", "nc", "bash", "sh", "python", "perl", "whoami", "uname",
+  "ifconfig", "ipconfig", "netstat", "dir", "type", "powershell", "cmd", "sleep", "timeout",
+  "passwd", "etc", "bin", "system32", "&&", "||", ";", "|", "`", "$(", "${"
+)
+CHUNKED_SPLIT_KEYWORDS_REGEX = "|".join(re.escape(_) for _ in CHUNKED_SPLIT_KEYWORDS)
 
 # Regular expression used for detecting JSON POST data
+# A GraphQL document, as it arrives on its own rather than inside a JSON envelope.
+GRAPHQL_RECOGNITION_REGEX = r'(?s)\A\s*(?:query|mutation|subscription)\b[^{]*\{.*\}\s*\Z'
+
+# An argument the document carries, as the name it is written under and the string it is given.
+GRAPHQL_ARGUMENT_REGEX = r'([A-Za-z_]\w*)\s*:\s*"((?:[^"\\]|\\.)*)"'
+
+# The same argument as a JSON envelope spells it, with the document's own quotes escaped.
+GRAPHQL_ARGUMENT_ESCAPED_REGEX = r'([A-Za-z_]\w*)\s*:\s*\\"((?:[^"\\]|\\.)*?)\\"'
+
+# What a page has to say for an injected condition to have held, where the run was given a way to
+# tell - the answer a blind technique reads when the target branches on the command rather than
+# printing it.
+BOOLEAN_BASED_STATE = None
+
+# Whether the POST body is a GraphQL document.
+IS_GRAPHQL = False
+
 JSON_RECOGNITION_REGEX = r'(?s)\A(\s*\[)*\s*\{.*"[^"]+"\s*:\s*("[^"]*"|\d+|true|false|null).*\}\s*(\]\s*)*\Z'
 
 # Regular expression used for detecting JSON-like POST data
@@ -813,12 +1837,54 @@ JSON_LIKE_RECOGNITION_REGEX = r"(?s)\A(\s*\[)*\s*\{.*'[^']+'\s*:\s*('[^']+'|\d+)
 
 # Base64 format recognition
 BASE64_RECOGNITION_REGEX = r'^[A-Za-z0-9+/]+[=]{0,2}$'
+# The same alphabet as it is written where a value has to survive a URL or a filename (RFC 4648).
+BASE64_URLSAFE_RECOGNITION_REGEX = r'^[A-Za-z0-9\-_]+[=]{0,2}$'
 
 # Hex encoded characters recognition
-HEX_RECOGNITION_REGEX = r'^[0-9a-f]+'
+HEX_RECOGNITION_REGEX = r'^(0[xX])?[0-9a-fA-F]+$'
 
-# GET parameters recognition
-GET_PARAMETERS_REGEX = r"(.*?)\?(.+)"
+# Ignore short values that can coincidentally match the base64/hex charset.
+ENCODING_MIN_LENGTH = 8
+
+# Minimum printable-character ratio for treating a base64/hex charset match as encoded.
+ENCODING_PLAUSIBILITY_RATIO = 0.85
+
+# How the parameter under test carries its value, where it carries it written in something: the
+# codec, the alphabet and the padding it arrived with, so that it is sent back written the same way.
+VALUE_ENCODING = None
+
+# The encodings a value can be said to be carried in, and what was said with '--param-encoding':
+# a name for each parameter that carries one, or one name standing for every parameter tested.
+ENCODING_BASE64 = "base64"
+ENCODING_BASE64_SAFE = "base64-safe"
+ENCODING_HEX = "hex"
+# A value carried as the 'kid' of a JSON Web Token - the field naming which key to verify with, read
+# by the target before the signature it would verify has been checked. The rest of the token is kept
+# exactly as it arrived, signature included, so what is tested is that one field.
+ENCODING_JWT_KID = "jwt-kid"
+SUPPORTED_PARAMETER_ENCODINGS = (ENCODING_BASE64, ENCODING_BASE64_SAFE, ENCODING_HEX, ENCODING_JWT_KID)
+# What the tamper scripts that used to write a value out encoded are taken to mean now.
+ENCODING_TAMPER_SCRIPTS = {"base64encode": ENCODING_BASE64, "hexencode": ENCODING_HEX}
+PARAMETER_ENCODINGS = {}
+PARAMETER_ENCODING_DEFAULT = None
+
+# Whitespace, angle brackets and quotes cannot be in a path worth reading back, and letting them in
+# is what turns a page that merely mentions a path in its prose into a match running across the
+# markup around it - tags, newlines and all - rather than the path itself.
+#
+# Either separator, and a drive letter where one is written: a Windows target names its own paths
+# with backslashes, and a pattern spelled in forward slashes alone never matches one - leaving the
+# only route that reads a root off the target's own output dead on the platform whose candidate
+# lists are the thinnest.
+#
+# Greedy, so the whole path is taken: a directory with a dot in its name - a host-named one above
+# all, which is the very thing the hostname is matched against - otherwise ends the match where
+# that name does, leaving a root to be cut out of a path stopping short of it.
+DIRECTORY_REGEX = r'(?:[A-Za-z]:)?(?:[\\/][^\\/\s<>"\x27]+)+[\\/]\w+\.\w+'
+
+# Directory names a leaked absolute path (an error message naming the running script's own path is
+# the most common way) is cut at, the same document-root name the target itself is likely using.
+GENERIC_DOC_ROOT_DIRECTORY_NAMES = ("htdocs", "httpdocs", "public", "public_html", "wwwroot", "www", "site")
 
 # TFB Decimal
 TFB_DECIMAL = False
@@ -826,37 +1892,31 @@ TFB_DECIMAL = False
 # Ignore Error Message
 IGNORE_ERR_MSG = False
 
-# Default (windows) target host's python interpreter
-WIN_PYTHON_INTERPRETER = "python.exe"
-USER_DEFINED_PYTHON_DIR = False
-
-# Default (linux) target host's python interpreter
-LINUX_PYTHON_INTERPRETER = "python3"
-USER_DEFINED_PYTHON_INTERPRETER = False
-
 # Windows PHP installed directory.
 WIN_PHP_DIR = "C:\\xampp\\php\\php.exe"
 USER_DEFINED_PHP_DIR = False
 
 # Comment out
-WIN_COMMENT = "REM"
 COMMENT = "#"
 
 #Delete command
-WIN_DEL = "DEL "
+WIN_DEL = "powershell.exe Remove-Item "
 DEL = "rm "
 
 # Time-based Variables
-FOUND_HOW_LONG = "" 
-FOUND_DIFF = ""
 
 # Check for PowerShell
 PS_ENABLED = None
 
 # ANSI colors removal
 ANSI_COLOR_REMOVAL = r'\x1b[^m]*m'
+_ANSI_COLOR_REMOVAL_REGEX = re.compile(ANSI_COLOR_REMOVAL)
 
-# Default LHOST / LPORT / RHOST setup, 
+# The text with its colour codes taken out, for anywhere they would be read literally.
+def strip_ansi_codes(text):
+  return _ANSI_COLOR_REMOVAL_REGEX.sub("", text)
+
+# Default LHOST / LPORT / RHOST setup,
 # for the reverse TCP connection
 LHOST = ""
 LPORT = ""
@@ -866,47 +1926,186 @@ RHOST = ""
 URIPATH = "/"
 SRVPORT = 8080
 
-# Maybe a WAF/IPS/IDS protection.
-WAF_ENABLED = False
+# Catch bind/reverse shells with a built-in listener instead of an external nc/ncat.
+HANDLER = False
+LAST_SELECTED_MODULE = ""
 
 # Session Handler
 SESSION_FILE = ""
 LOAD_SESSION = None
+# Whether a stored technique likely exists for the current target (host + method).
+LIKELY_RESUME = False
+# Cache stored techniques per parameter.
+# What has already been said about a stored session this run, so that a fact noticed once per
+# resumed technique is still only reported once.
+REPLAY_NOTICES_SAID = set()
 
-# Retest all techniques
-RETEST = False
+STORED_TECHNIQUES = {}
+# Pending file/tempfile-based cleanups, asked at quit() - keyed by output file path.
+PENDING_FILE_CLEANUPS = {}
 
-# Define the default credentials files
-USERNAMES_TXT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'txt')) + "/" + "usernames.txt"
-PASSWORDS_TXT_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'txt')) + "/" + "passwords_john.txt"
+# Output files written on the target, listed once per target when it is done with.
+LEFTOVER_FILES = []
+# Separators that join two commands and so cannot be the last thing on the line.
+BINARY_SEPARATORS = ("&&", "||", "|")
+# The shell's own do-nothing command, which also ignores every argument handed to it.
+NO_OPERATION = ":"
+# The separator that carries one command's output into the next.
+PIPE_SEPARATOR = "|"
+# Writing the output and reading it back are two requests, and the read can reach the target
+# before the write has landed - so it is tried again while it still holds what it held before.
+MAX_OUTPUT_FILE_READS = 3
+OUTPUT_FILE_READ_DELAY = 1
+LAST_OUTPUT_FILE_CONTENT = None
+# And what the target said about the file itself when that content was read - an entity tag or
+# a last-modified date, which is how a read tells the command's own output from what the file
+# held before it.
+LAST_OUTPUT_FILE_VALIDATOR = None
+# How many times an unusable URL is asked for again before the run gives up on being answered.
+MAX_INVALID_URL_ANSWERS = 3
+# Findings confirmed this run, for the end-of-run summary.
+CONFIRMED_INJECTION_POINTS = []
+
+# One entry per technique that proved a point, with the executor that reaches it - see proof.py.
+PROOF_EXECUTORS = []
+PROOF_DONE = False
+# (prefix, suffix, separator, whitespace) confirmed by one technique, tried first by the others.
+CONFIRMED_BOUNDARY = {}
+# Whether the "keep testing others" prompt already fired for this target.
+ASKED_KEEP_TESTING = False
+# Post-detection actions (enumeration, file access, --os-cmd), deferred until quit().
+PENDING_POST_DETECTION_ACTIONS = []
+OS_CMD_DONE = False
+# The single deferred --os-shell entry, run at quit().
+PENDING_OS_SHELL_ENTRY = None
+# Guards the resumed-session log notice against quit()'s recursion.
+LOGS_NOTIFICATION_SHOWN = False
+# Log files that could not be written, so the run neither retries the warning nor claims they hold anything.
+UNWRITABLE_LOG_FILES = set()
+# Set once a finding is worth suggesting '--os-shell' for, printed where the run ends.
+OS_SHELL_SUGGESTION_PENDING = False
+
+# Path to file containing desktop/browser User-Agent strings
+USER_AGENT_LIST = os.path.join(TXT_DIR, "user-agents.txt")
+
+# Path to file containing mobile User-Agent strings
+MOBILE_USER_AGENT_LIST = os.path.join(TXT_DIR, "mobile-user-agents.txt")
+
+# The candidate names '--mine-params' works through, and how many of them go in one request.
+PARAMETER_MINING_LIST = os.path.join(TXT_DIR, "common-parameters.txt")
+PARAMETER_MINING_BUCKET = 25
+
+# Long enough that a name carrying it cannot be one the target has a use for.
+MINING_DECOY_LENGTH = 8
+
+# How much text a candidate has to add to a page, past what the page moves on its own, to count.
+MINING_MINIMUM_INSERT = 16
+
+# How many answers to names the target cannot know are read before one it might know is asked for.
+MINING_NOISE_SAMPLES = 3
+
+# How many times over a name has to answer differently before it is taken as one the target reads.
+MINING_CONFIRMATIONS = 2
+
+# What a mined parameter is given to carry, having no value of its own to go by.
+MINED_PARAMETER_VALUE = "1"
+
+# What '--mine-endpoints' reads per page, and how much of each script.
+MAX_MINED_SCRIPTS = 20
+MAX_MINED_SCRIPT_SIZE = 1 * 1024 * 1024
+
+# Path to file with default username values
+USERNAMES_TXT_FILE = os.path.join(TXT_DIR, "default_usernames.txt")
+
+# Path to file with default password values
+PASSWORDS_TXT_FILE = os.path.join(TXT_DIR, "default_passwords.txt")
+
+# Appended to each dictionary word, one suffix at a time, when the user opts into it for cracking
+# a retrieved password hash - the common ways a plain word gets turned into a "stronger" one.
+COMMON_PASSWORD_SUFFIXES = ("1", "123", "2", "12", "3", "13", "7", "11", "5", "22", "23", "01", "4", "07", "21", "14", "10", "06", "08", "8", "15", "69", "16", "6", "18")
+
+# Path to file with known CGI scripts/pages potentially vulnerable to Shellshock
+CGI_SCRIPTS = os.path.join(TXT_DIR, "shocker-cgi_list.txt")
+
+# The candidate paths '--common-files' checks for existence, one '--file-read' away once confirmed.
+COMMON_FILES_LIST = os.path.join(TXT_DIR, "common-files.txt")
 
 REQUIRED_AUTHENTICATION = False
 
-INJECTED_HTTP_HEADER = False
 INJECTION_CHECKER = False
 
-# List of pages / scripts potentially vulnerable to Shellshock
-CGI_SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'txt')) + "/" + "shocker-cgi_list.txt"
+INSTALL_DIR = "/usr/share/"
+WRAPPER_PATH = "/usr/bin/"
 
 # Metasploit Framework Path
-METASPLOIT_PATH = "/usr/share/metasploit-framework/"
+METASPLOIT_PATH = INSTALL_DIR + "/metasploit-framework/"
 
 # Supported HTTP Authentication types
-SUPPORTED_HTTP_AUTH_TYPES = [ "basic", "digest" ]
+class AUTH_TYPE(object):
+  BASIC = "basic"
+  DIGEST = "digest"
+  BEARER = "bearer"
+  # Proved by a certificate presented while connecting, rather than by anything sent in a header.
+  PKI = "pki"
 
-# HTTP Headers
-HTTP_HEADERS = [ "user-agent", "referer", "host" ]
+# Cached digest realm, discovered from the target's WWW-Authenticate challenge.
+DIGEST_AUTH_REALM = None
 
 RAW_HTTP_HEADERS = ""
 
+# Request blocks of a proxy log export, delimited by rows of '=' and starting on a method token.
+PROXY_LOG_REQUEST_REGEX = r"={10,}\s+([A-Z]{3,} .+?)\s+(={10,}|\Z)"
+# Requests of an XML history export, stored base64-encoded with the port kept apart.
+PROXY_LOG_XML_REQUEST_REGEX = r'<port>(\d+)</port>.*?<request base64="true"><!\[CDATA\[([^]]+)'
+# Targets parsed from a file holding more than one request, tested one after the other.
+MULTI_REQUEST_TARGETS = []
+# Targets left out by the '--scope' option, reported once the target list is known.
+SKIPPED_OUT_OF_SCOPE = set()
+
+USER_APPLIED_TAMPER = ""
+# The modules named with "--module", by name, so a heuristic does not drop one that was asked for.
+USER_APPLIED_MODULE = ()
+
+"""
+Tamper scripts this run reached for on its own, kept apart from the ones '--tamper' named.
+
+What is adopted to get past a filter belongs to the parameter it was adopted for: written back into
+the option instead, it outlives that parameter and every one tested afterwards inherits a rewrite it
+was never shown to need - which reads as "not injectable" where the substitute is filtered too. The
+option itself is also the user's answer to this question, so it is never written over with ours.
+"""
+AUTO_TAMPER = []
+
+"""
+Registered injection modules: the name '--module' takes -> (import path, handler).
+
+Kept here rather than beside the loader so that the option parser can read it without importing it,
+and so a module is added in one place. A module reuses the shared core building blocks
+(requests/checks/shell_options/handler) instead of reimplementing them - see shellshock.py.
+"""
+MODULES = {
+  "shellshock": ("src.core.modules.shellshock.shellshock", "shellshock_handler"),
+}
+
+# Tamper payload modification letters
+TAMPER_MODIFICATION_LETTERS = r'([e-zE-Z])'
+
 # Tamper scripts dict
 TAMPER_SCRIPTS = {
+                  "phpserverheaders": False,
                   "space2ifs": False,
-                  "base64encode": False,
-                  "hexencode": False,
                   "space2plus": False,
                   "space2htab": False,
                   "space2vtab": False,
+                  "space2brace": False,
+                  "ansiquote": False,
+                  "ansiquoteoctal": False,
+                  "printfoctal": False,
+                  "space2ifsraw": False,
+                  "unicodequote": False,
+                  "cmd2wildcard": False,
+                  "cmd2var": False,
+                  "cmd2redir": False,
                   "doublequotes": False,
                   "singlequotes": False,
                   "caret": False,
@@ -915,12 +2114,186 @@ TAMPER_SCRIPTS = {
                   "nested": False,
                   "sleep2usleep": False,
                   "sleep2timeout": False,
+                  "sleep2ping": False,
+                  "phphexname": False,
+                  "phpconcat": False,
+                  "phpnoletters": False,
+                  "pyhexname": False,
                   "xforwardedfor": False,
                   "dollaratsigns": False,
+                  "dollarstars": False,
+                  "printf2echo": False,
                   "uninitializedvariable": False,
-                  "slash2env":False,
-                  "backticks":False
+                  "slash2env": False,
+                  "backticks": False,
+                  "randomcase": False,
+                  "rev": False,
+                  "cmd2loop": False,
+                  "dashlesstest": False,
+                  "noletters": False,
+                  "phpnosymbols": False,
+                  "jsvmescape": False,
+                  "nashornexec": False,
+                  "pybuiltinsescape": False,
+                  "basicobjectescape": False,
+                  "space2randomblank": False,
+                  "luadebugescape": False
                  }
+
+# Execution priority for tamper scripts; each script defines its own __priority__.
+class PRIORITY(object):
+  HIGHEST = 100
+  HIGHER = 75
+  HIGH = 50
+  ABOVE_NORMAL = 25
+  NORMAL = 0
+  BELOW_NORMAL = -25
+  LOW = -50
+  LOWER = -75
+  LOWEST = -100
+
+# Tamper script pairs that cannot be combined.
+# Tamper scripts turned on by themselves once a WAF/IPS is found in front of the target.
+# One script per bypass class: the whitespace, the command names, the casing and the client address.
+# Only one of "uninitializedvariable" / "dollaratsigns" / "backslashes" can be used, they conflict.
+# Each tier is heavier than the one before, and every one is listed by descending priority.
+WAF_EVASION_PROFILE = {
+                  "unix" : [
+                    "randomcase,xforwardedfor,uninitializedvariable,space2ifs",
+                    "rev,randomcase,xforwardedfor,dollaratsigns,space2htab"
+                  ],
+                  "windows" : [
+                    "xforwardedfor,doublequotes,caret,space2vtab",
+                    "xforwardedfor,doublequotes,caret,space2htab"
+                  ]
+}
+# What the evasion actually turned on, so it is reported once and never applied twice.
+WAF_EVASION_APPLIED = ""
+# Whether the evasion getting a finding past the WAF/IPS has already been confirmed to the user.
+WAF_BYPASS_CONFIRMED = False
+# Whether the user agreed to the evasion, asked once and remembered for the rest of the run.
+WAF_EVASION_CONSENT = None
+# Which tier of the profile is in use, stepped up while the protection keeps blocking.
+WAF_EVASION_TIER = 0
+# Blocked responses seen since the last step up. A block reaching here already means the evasion
+# in use was not enough, so there is nothing to wait for.
+WAF_BLOCKS_SINCE_EVASION = 0
+WAF_ESCALATION_THRESHOLD = 1
+# Set when the evasion was just stepped up, so the technique that was blocked is tried again.
+WAF_EVASION_ESCALATED = False
+# Whether the evasion has already taken this tool's name off the request itself.
+WAF_EVASION_FINGERPRINT_APPLIED = False
+"""
+Whether the request is meant to read as a browser's rather than as this tool's: set by switch
+'--random-agent', by switch '--mobile', and by the evasion once a WAF/IPS is being answered.
+
+A browser's "User-Agent" over a "*/*" nothing but a scanner sends, and with no "Accept-Language"
+at all, is still a scanner to anything weighing the headers as a set - so the headers that go with
+the one being replaced follow the same switch.
+"""
+BROWSER_LIKE_HEADERS = False
+
+# Scripts that rewrite the user's command in place, in the order their rewrites are applied. The
+# paths go first, so that what the name-splitting script is handed is a name and not a glob; the
+# space-folding script goes last, since splitting the name across variables (or wildcarding it,
+# though a bare name carries no path to glob) leaves nothing after it that still reads as one of
+# its recognised command names, so it is left to fold away whatever space is still there to find.
+COMMAND_REWRITERS = ("cmd2wildcard", "cmd2var", "cmd2redir")
+
+# Scripts asking more of the target's shell than POSIX gives, and what each one asks for. A run
+# carrying one of these and finding nothing may have found nothing because the shell is a plain one.
+SHELL_FEATURE_TAMPERS = {
+                  "space2brace": "brace expansion",
+                  "ansiquote": "ANSI-C quoting",
+                  "ansiquoteoctal": "ANSI-C quoting"
+}
+
+INCOMPATIBLE_TAMPER_SCRIPTS = [
+                  # "\$" is a literal "$", so the escape kills the other script's "$@" / "${XX}".
+                  ("backslashes", "dollaratsigns"),
+                  ("backslashes", "uninitializedvariable"),
+                  # "$@" lands inside "${XX}", corrupting the variable name.
+                  ("dollaratsigns", "uninitializedvariable"),
+                  # "$*" is the same emptiness said differently, so it breaks in the same places.
+                  ("backslashes", "dollarstars"),
+                  ("dollarstars", "uninitializedvariable"),
+                  # Both interleave the same characters, so together they say everything twice.
+                  ("dollaratsigns", "dollarstars"),
+                  # Each of these writes between the characters of a word that is now hex escapes,
+                  # so what the shell reads back is no longer the word that was encoded.
+                  ("ansiquote", "backslashes"),
+                  ("ansiquote", "dollaratsigns"),
+                  ("ansiquote", "dollarstars"),
+                  ("ansiquote", "singlequotes"),
+                  ("ansiquote", "uninitializedvariable"),
+                  # Two encodings of the same words, over the same characters.
+                  ("ansiquote", "ansiquoteoctal"),
+                  ("ansiquoteoctal", "backslashes"),
+                  ("ansiquoteoctal", "dollaratsigns"),
+                  ("ansiquoteoctal", "dollarstars"),
+                  ("ansiquoteoctal", "singlequotes"),
+                  ("ansiquoteoctal", "uninitializedvariable"),
+                  # A third encoding of the same words, over the same characters.
+                  ("printfoctal", "ansiquote"),
+                  ("printfoctal", "ansiquoteoctal"),
+                  ("printfoctal", "backslashes"),
+                  ("printfoctal", "dollaratsigns"),
+                  ("printfoctal", "dollarstars"),
+                  ("printfoctal", "singlequotes"),
+                  ("printfoctal", "uninitializedvariable"),
+                  # A literal "'" is the delimiter both scripts need - one is quoting with it, the
+                  # other is folding it away into a character no delimiter is read from.
+                  ("ansiquote", "unicodequote"),
+                  ("ansiquoteoctal", "unicodequote"),
+                  ("printfoctal", "unicodequote"),
+                  ("singlequotes", "unicodequote"),
+                  # "''" is literal inside the double-quoted "tr" ranges that "randomcase" builds.
+                  ("randomcase", "singlequotes"),
+                  # Both name the same function in the same call, so the second finds the name of
+                  # the first already broken up and has nothing left to rewrite.
+                  ("phphexname", "phpconcat"),
+                  ("phphexname", "phpnoletters"),
+                  ("phpconcat", "phpnoletters"),
+                  # All three replace the user's command outright, so only one of them can have it.
+                  ("cmd2wildcard", "rev"),
+                  ("cmd2wildcard", "randomcase"),
+                  ("cmd2var", "rev"),
+                  ("cmd2var", "randomcase"),
+                  # A bare name is glob territory, not a path to wildcard or a command to garble.
+                  ("noletters", "cmd2wildcard"),
+                  ("noletters", "rev"),
+                  ("noletters", "randomcase")
+]
+
+# Words that must survive per-character obfuscation - shell keywords stop being keywords once
+# obfuscated, and user-supplied commands can still use them.
+IGNORE_TAMPER_TRANSFORMATION = [
+                  "IFS",
+                  "if",
+                  "then",
+                  "elif",
+                  "else",
+                  "fi",
+                  "for",
+                  "while",
+                  "until",
+                  "do",
+                  "done",
+                  "case",
+                  "esac",
+                  "in",
+                  "cmd",
+                  "%0d",
+                  "PATH%%u*",
+                  # A quoted name is a command name rather than an assignment, and the locale would go unpinned.
+                  "LC_ALL",
+                  # A builtin, so there is no file of its own length for a glob to resolve it to.
+                  "export",
+                  RANDOM_VAR_GENERATOR,
+                  RANDOM_VAR_GENERATOR + "1",
+                  RANDOM_VAR_GENERATOR + "2",
+                  RANDOM_VAR_GENERATOR + "3"
+]
 
 # HTTP Errors
 BAD_REQUEST = "400"
@@ -929,18 +2302,25 @@ FORBIDDEN_ERROR = "403"
 NOT_FOUND_ERROR = "404"
 NOT_ALLOWED = "405"
 NOT_ACCEPTABLE_ERROR = "406"
+LENGTH_REQUIRED = "411"
+REQUEST_URI_TOO_LONG = "414"
+TOO_MANY_REQUESTS = "429"
+UNAVAILABLE_FOR_LEGAL_REASONS = "451"
 INTERNAL_SERVER_ERROR = "500"
 NOT_IMPLEMENTED = "501"
 BAD_GATEWAY = "502"
 SERVICE_UNAVAILABLE = "503"
 GATEWAY_TIMEOUT = "504"
-
-HTTP_ERROR_CODES = [  BAD_REQUEST, 
+HTTP_ERROR_CODES = [  BAD_REQUEST,
                       UNAUTHORIZED_ERROR,
                       FORBIDDEN_ERROR,
                       NOT_FOUND_ERROR,
                       NOT_ALLOWED,
                       NOT_ACCEPTABLE_ERROR,
+                      LENGTH_REQUIRED,
+                      REQUEST_URI_TOO_LONG,
+                      TOO_MANY_REQUESTS,
+                      UNAVAILABLE_FOR_LEGAL_REASONS,
                       INTERNAL_SERVER_ERROR,
                       NOT_IMPLEMENTED,
                       BAD_GATEWAY,
@@ -948,8 +2328,70 @@ HTTP_ERROR_CODES = [  BAD_REQUEST,
                       GATEWAY_TIMEOUT
                     ]
 
+# Seconds added to the delay between requests, when the target answers as if it has had enough.
+ADAPTIVE_DELAY = 0
+# Where the backing off stops, and how many answered requests it takes to give a second back.
+MAX_ADAPTIVE_DELAY = 8
+ADAPTIVE_DELAY_RECOVERY = 10
+ADAPTIVE_DELAY_STREAK = 0
+
+# HTTP status codes a WAF/IPS typically returns when it blocks a request.
+WAF_BLOCK_HTTP_CODES = [ FORBIDDEN_ERROR,
+                         NOT_ACCEPTABLE_ERROR,
+                         TOO_MANY_REQUESTS,
+                         UNAVAILABLE_FOR_LEGAL_REASONS,
+                         NOT_IMPLEMENTED,
+                         SERVICE_UNAVAILABLE
+                       ]
+
+# Server header / cookie name / block-page body fingerprints for common WAF/CDN products, checked
+# against the first blocked response seen; a response matching none of them falls back to the
+# generic "some kind of WAF/IPS" wording instead of naming one.
+WAF_SIGNATURES = {
+                  "Cloudflare": r"(?i)cloudflare|cf-ray|__cfduid|cf_clearance",
+                  "Akamai": r"(?i)akamaighost|ak_bmsc|reference\s*#\d+\.[0-9a-f]+",
+                  "Imperva Incapsula": r"(?i)incapsula|incap_ses|visid_incap",
+                  "F5 BIG-IP ASM": r"(?i)big-?ip|bigipserver|the requested url was rejected",
+                  "Sucuri": r"(?i)sucuri",
+                  "ModSecurity": r"(?i)mod_security|owasp[_ ]core[_ ]rule[_ ]set",
+                  "FortiWeb": r"(?i)fortiweb|fortiwafsid",
+                  "Citrix Application Firewall": r"(?i)citrix application firewall|ns_af=",
+                  "Barracuda WAF": r"(?i)barracuda|barra_counter_session",
+                  "Wallarm": r"(?i)wallarm",
+                  "AWS WAF": r"(?i)aws waf|x-amzn-waf"
+                 }
+
+HTTP_ERROR_CODES_SUM = []
+
+# Statuses a gateway gives about itself rather than about the request, so the same request put to
+# it again may well be answered - unlike a 4xx, which is the target's answer and will not change.
+TRANSIENT_HTTP_ERROR_CODES = (INTERNAL_SERVER_ERROR, BAD_GATEWAY, SERVICE_UNAVAILABLE, GATEWAY_TIMEOUT)
+
+# The status the last request came back with, where that status was an error - see headers.resend().
+LAST_HTTP_ERROR = None
+
+# Set once the target has been found unusable, so the phases behind the check are not spent on it.
+TARGET_UNUSABLE = False
+# Asked at most once per run, and remembered where the answer was to carry on regardless.
+NOT_FOUND_PROMPTED = False
+IGNORE_NOT_FOUND = False
+# Asked at most once per run, where the two samples of the page did not come back the same.
+UNSTABLE_PROMPTED = False
+
+# Where honouring a 'Retry-After' stops, so a target naming an hour cannot park the run for one.
+RATE_LIMIT_MAX_DELAY = 60.0
+# Turned off for the run once the target answers that it will not read a chunked body.
+CHUNKED_UNSUPPORTED = False
+
 # End line
-END_LINE = ["\r", "\n", "\r\n"]
+class END_LINE:
+  CR = "\r"
+  LF = "\n"
+  CRLF = "\r\n"
+  ESCAPED_CR = "\\r"
+  ESCAPED_LF = "\\n"
+
+# List of end lines
 
 # Check for updates on start up.
 CHECK_FOR_UPDATES_ON_START = True
@@ -957,10 +2399,12 @@ CHECK_FOR_UPDATES_ON_START = True
 # Skip the mathematic calculation (Detection Phase)
 SKIP_CALC = False
 
-USE_BACKTICKS = False
+# Confirm the time-based technique with a plain, uncomputed delay - no '$(...)' or backtick at all -
+# for a target whose filter blocks command substitution outright but still lets a separator through.
+SKIP_SUBST = False
 
 METASPLOIT_ERROR_MSG =  "You need to have Metasploit installed. "
-METASPLOIT_ERROR_MSG += "Please ensure Metasploit is installed in the right path."
+METASPLOIT_ERROR_MSG += "Please ensure it is installed in the right path."
 
 # Target URL reload
 URL_RELOAD = False
@@ -971,20 +2415,289 @@ CLI_HISTORY = ""
 # Check for multi encoded payloads
 MULTI_ENCODED_PAYLOAD = []
 
-# Default Timeout
-TIMEOUT = 31
+# Default Timeout (Seconds to wait before timeout connection)
+TIMEOUT = 30
+
+# The shortest wait worth believing an answer from. Under it, a target that is merely slow is
+# indistinguishable from one that is not answering at all, and every technique reading that silence
+# reports a parameter as not injectable for a reason that was never the target's.
+MIN_SAFE_TIMEOUT = 3
 
 # Retries when the connection timeouts (Default: 3).
 MAX_RETRIES = 3
 
-# End of file
-EOF = False
+# Said once per target, where the retries ran out on a page '--retry-on' still matches.
+RETRY_ON_EXHAUSTED = False
+
+# Failed writes to the web root, at most, before the temporary directory is offered instead. A
+# smaller set of boundaries than this is gone through in full first, rather than stopped one short.
+MAX_FAILED_TRIES = 50
+
+# Consecutive connection errors tolerated before giving up.
+CONNECTION_ERROR_RETRIES = 0
+MAX_CONNECTION_ERROR_RETRIES = 5
+
+# Count of connection-error warnings shown.
+VISIBLE_CONNECTION_ERRORS = 0
+
+# Statistical model for recognizing a delay against this target's own response times.
+TIME_STDEV_COEFF = 7
+TIME_OUTLIER_MAD_COEFF = 10
+# Decision-threshold floor and shrink-candidate validity margin.
+MIN_VALID_DELAYED_RESPONSE = 0.5
+# Minimum delay-threshold margin above the mean, as a fraction of the mean.
+MIN_RELATIVE_DELAY_MARGIN = 0.5
+WARN_TIME_STDEV = 0.5
+# The same spread, read against the target's own pace. Half a second of movement is a lot on a page
+# that answers at once and nothing at all on one that runs a command first, so a target is called
+# laggy only where its answers also move by this much of what they take.
+WARN_TIME_RELATIVE_STDEV = 0.25
+
+# One escalate/shrink step, in seconds - separate from the floor above.
+TIME_DELAY_STEP = 1
+# Target size of the upfront baseline warm-up.
+MIN_TIME_RESPONSES = 30
+MAX_TIME_RESPONSES = 200
+RESPONSE_TIMES = []
+
+# Answers to the technique's own payload with a condition that cannot hold, kept apart from
+# the plain requests the model is warmed up with: those two cost different amounts.
+PROBE_RESPONSE_TIMES = []
+MIN_PROBE_RESPONSES = 5
+# How much of a plain request's cost a probe has to carry before its timing is believed to be one.
+# Below this the payload never reached the sink, so the answer timed is something else's.
+MIN_PROBE_RELATIVE_COST = 0.5
+
+# Samples needed before spikes are worth stripping from a response-time model. Tied to the smaller
+# of the two models rather than the larger: the probe model is read from five samples up, and left
+# unfiltered until fifteen a single slow probe sets the threshold above the delay it must detect.
+MIN_OUTLIER_SAMPLE = MIN_PROBE_RESPONSES
+# Set once a time-related payload's own cost has been sampled into the model above.
+PAYLOAD_BASELINE_SAMPLED = False
+# Whether the model above was sampled the way the payloads that follow are sent - concurrently,
+# where '--threads' asks for it. A target answers a request slower while it is serving others.
+CONCURRENT_BASELINE = False
+LAGGING_CHECKED = False
+LAGGING_DETECTED = False
+TIME_DELAY_CANDIDATES = 3
+# Retries for a failed (not just slow) request during time-based measurement.
+TIME_RELATED_ATTACK_RETRIES = 3
+
+# Best known timesec for this target.
+CALIBRATED_TIMESEC = None
+
+# Latched once a re-verification ever fails - widens retries and upgrades checks to a vote.
+JITTER_SEEN = False
+MAX_LENGTH_REVALIDATIONS = 5
+
+# Use the observed charset for bisection when it is small enough; otherwise use the full range.
+NARROWING_MIN_OBSERVED = 3
+NARROWING_MAX_SET_SIZE = 64
+
+# Number of most-frequent characters probed directly before bisecting.
+FREQUENCY_PROBE_TOP_K = 3
+
+# How often a byte has to repeat before the set already seen is worth halving instead of the pool.
+# Asking about that set and being wrong costs the questions it took plus the pool's own halving, so
+# it only pays where the output really does say the same things over again - an output of mostly
+# distinct bytes answered more slowly for being asked the clever way.
+NARROWING_MIN_REPEAT_RATIO = 2
+
+
+# Prevent auto-shrink from undoing a delay increase after validation.
+ADJUST_TIME_DELAY_DISABLED = False
+
+# User's one-time answer to time-sec optimization; None means not asked yet.
+ADJUST_TIME_DELAY_CHOICE = None
+
+# Count clean validations since the last retry before re-enabling automatic delay adjustment.
+VALIDATION_RUN = 0
+VALID_TIME_CHARS_RUN_THRESHOLD = 100
+
+# User's one-time answer to the multi-threading safety prompt; None means not asked yet.
+THREADED_TIME_RETRIEVAL_CHOICE = None
+
+# Technique titles to suppress when a fallback already announced the transition.
+# The (parameter, technique) last announced, so a re-announcement reads as "Continuing with".
+LAST_ANNOUNCED_TECHNIQUE = None
+
+"""
+How many requests had been sent when a technique announced itself, so that a line closed by
+something else can be told apart by whether any testing actually happened after it.
+"""
+LAST_ANNOUNCED_REQUESTS = 0
+
+"""
+How often real output has broken into an open progress line, and what that stood at when a technique
+last announced itself.
+
+Compared rather than counted for its own sake: a technique whose line was interrupted by a question
+resumes as "Continue testing the ...", while one announced again with nothing printed in between was
+never interrupted and stays "Testing the ..." - the reader saw no break for it to continue from.
+"""
+PROGRESS_INTERRUPTIONS = 0
+LAST_ANNOUNCED_INTERRUPTIONS = 0
+
+"""
+The technique whose title has already been said a second time. A technique that stops to ask
+something more than once would otherwise announce itself again on every resume, turning one line
+into a column of identical ones.
+"""
+LAST_RESUMED_TECHNIQUE = None
+
+# The output file last announced, so the same one is not announced again for every separator tried.
+LAST_ANNOUNCED_OUTPUT_FILE = None
+
+# The history file already reported as unwritable, so every path out of a run does not repeat it.
+FAILED_HISTORY_FILE = None
+
+# How much of git's own complaint is repeated when an update fails.
+MAX_UPDATE_REASON_LENGTH = 200
+
+# How many answers the concurrency probe times on each side, and the total below which it cannot say.
+CONCURRENCY_PROBE_REQUESTS = 16
+CONCURRENCY_PROBE_FLOOR = 0.05
+
+# Said while the target's own response times are still being sampled, so a delay can be told apart.
+TIMING_BASELINE_MSG = "Time-related response comparison requires a larger statistical model"
+# The second model, taken from the payload's own shape: what it costs to ask is part of the time an
+# answer takes, and the threshold a delay is read against has to stand above that too.
+TIMING_PAYLOAD_BASELINE_MSG = "Time-related response comparison requires a larger statistical model for the payload in hand"
+
+# Retries for the false-positive/unexploitable-point re-verification during detection.
+FALSE_POSITIVE_RETRIES = 3
+
+# Verification rounds for classic/eval/file-based.
+RESULTS_BASED_VERIFY_ROUNDS = 2
+
+# Prefix marking an interrupted command result.
+PARTIAL_VALUE_MARKER = "\x02COMMIX_PARTIAL\x02"
+
+# Max characters shown at once in the live progress line.
+# Below this a line is a label rather than a sentence, and says too little to name an answer by.
+CANDIDATE_SENTENCE_MIN_LENGTH = 10
+
+# Long enough to be distinctive, short enough to be typed back by hand.
+BOOLEAN_STRING_HINT_MAXLEN = 40
+
+# How far either side of a difference to reach for the context that makes it unique, smallest first.
+BOOLEAN_STRING_HINT_MARGINS = (10, 18, 26, 34)
+
+PROGRESS_DISPLAY_WIDTH = 60
+
+# How much of the estimate on screen is kept when a fresh one is worked out, so that one slow
+# character does not swing the countdown.
+ETA_DISPLAY_SMOOTHING = 0.5
+# What the bar is given when the terminal's own width cannot be read, and the least it is drawn in.
+DEFAULT_CONSOLE_WIDTH = 80
+MIN_PROGRESS_WIDTH = 20
+
+# Stands in for a character the time-related techniques never resolved, in the live progress line
+# and in the output they return - a dropped one would read as a value that was fully retrieved.
+UNRESOLVED_CHAR = "?"
+
+# What a run that ended on an error exits with, so that a caller can tell it apart from one that
+# finished. A run ending any other way - the user quitting, the work being done - still exits zero.
+EXIT_FAILURE = 1
+
+# What a run that tested everything it was asked to and found nothing exits with. Apart from the
+# one above, because a caller gating on commix has to tell a target that came back clean from a
+# scan that never got to look - both of which used to end the same way.
+EXIT_NOTHING_FOUND = 2
+
+# Requests dropped on a timeout because '--ignore-timeouts' was given, counted for the run's summary.
+IGNORED_TIMEOUTS = 0
+
+# The parameters '--randomize' was given, each one carrying a fresh value on every request.
+RANDOMIZE_PARAMETERS_LIST = []
+
+# The target's own first page, and the values its '<select>' menus offer - a parameter that is a
+# menu is randomized by picking one of its own options, rather than by inventing a value.
+ORIGINAL_PAGE = ""
+
+# Whether the target's page came back the same twice, and how alike the two samples were.
+PAGE_STABLE = None
+PAGE_NOISE_RATIO = 1.0
+
+# The target's page as it is worth comparing: its text, with the regions that move by themselves out.
+ORIGINAL_PAGE_COMPARABLE = ""
+
+# The page the parameter answers with while a short random value stands in for its own, and the
+# value that was taken for - the page kept at startup is the target as it was given, which is a
+# different request once the stand-in is in place.
+STAND_IN_PAGE = ""
+STAND_IN_PAGE_FOR = None
+
+# Where the page was found to move on its own, as what sits either side of each such region.
+DYNAMIC_MARKINGS = []
+
+# Whether the regions the page moves on its own have been looked for a second time, against a
+# request shaped the way the run's own requests are. The first look is taken when the target is
+# reached, which is before a cookie or a body is in play - and a target that only runs the command
+# once it has one prints nothing that moves until then, so that look finds nothing to record.
+DYNAMIC_MARKINGS_RESAMPLED = False
+
+# How much of the text either side of a moving region is kept to anchor on.
+DYNAMICITY_BOUNDARY_LENGTH = 20
+
+# Below this share of text, a page tells a comparison of whole pages next to nothing.
+LOW_TEXT_PERCENT = 20
+RANDOM_POOL = {}
+RANDOM_POOL_READ = False
+
+# The places '--param-filter' was given, in upper case - a parameter elsewhere is not tested.
+PARAM_FILTER_PLACES = []
+
+# Said once, however many requests a SOCKS4 proxy carries.
+SOCKS4_DNS_WARNING = False
+
+# The proxies read from '--proxy-file', and which of them is in use.
+PROXY_LIST = []
+PROXY_LIST_INDEX = 0
+# What '--proxy-cred' was given as, for the entries of the list that carry none of their own.
+PROXY_LIST_CRED = None
+
+# The request '--safe-req' was given, parsed once and replayed as it was written.
+SAFE_REQUEST = None
+
+# The request '--second-req' was given: where the output of an injection shows up, rather than
+# where the injection is sent.
+SECOND_ORDER_REQUEST = None
+
+# Every request this run has sent, counted for the options that act every so many of them.
+REQUEST_COUNTER = 0
+
+# The anti-CSRF token: what names it (an expression) and what the user wrote.
+CSRF_TOKEN = None
+CSRF_TOKEN_ORIGINAL = None
+
+"""
+The requests the run makes around the one it is measuring: the page a second-order result shows up
+on, the visit that keeps a session alive, the fetch of the page an anti-CSRF token is read from.
+Each is marked while it is on its way, so that it fetches nothing of its own kind, is left out of
+the count the pacing options act on, and is not taken for a second attempt at the request it was
+made around.
+
+Held per thread rather than for the run: each is asked for by a run-wide option, but the request
+it makes is made by one worker, and whatever another worker has in flight at that moment is a
+request of its own. Read off one flag shared by all of them, that request is taken for part of
+someone else's errand - left out of the tally its own retry check is read against, and left out of
+the pacing that '--safe-freq' and '--proxy-freq' go by.
+"""
+SIDE_REQUEST_KINDS = ("second_order", "safe_request", "csrf_token")
+SIDE_REQUESTS = _threading.local()
+
+# Whether this thread is in the middle of one of them - of the kind named, or of any kind at all.
+def in_side_request(kind=None):
+  names = (kind,) if kind else SIDE_REQUEST_KINDS
+  return any(bool(getattr(SIDE_REQUESTS, name, False)) for name in names)
+
+# Mark this thread as being in one of them, or out of it again.
+def set_side_request(kind, value):
+  setattr(SIDE_REQUESTS, kind, value)
 
 # Init Test
 INIT_TEST = ""
-
-# Check Tor again
-TOR_CHECK_AGAIN = True
 
 # URL for checking internet connection.
 CHECK_INTERNET_ADDRESS = "http://ipinfo.io"
@@ -998,14 +2711,45 @@ UNAUTHORIZED = False
 CHECK_BOTH_OS = False
 OS_CHECKS_NUM = 2
 
+# The banner did not name an operating system, and no heuristic has answered yet either. While this
+# stands, the question is still open - it is put to the user only once nothing else has settled it.
+OS_IDENTIFICATION_PENDING = False
+
+# A language the target named for itself, e.g. through 'X-Powered-By'. The sweep starts with it.
+IDENTIFIED_EVAL_LANGUAGE = None
+
 # Options to explicitly mask in anonymous (unhandled exception) reports.
-SENSITIVE_OPTIONS = ["--data", "-d", "--cookie", "-p", "--url", "-u", "-x", "--auth-cred", "-r", "-l"]
+# Everything that can carry a target's identity or a credential into a report meant for strangers.
+# The locale a payload measures its own output in.
+#
+# '${#var}' counts characters, and the retrieval beside it counts bytes - 'cut -c', 'tail -c' and
+# the ordinal that reads one back. A shell in a UTF-8 locale makes the two disagree on any output
+# that is not ASCII, so the length a run is given is short and the last bytes are never asked for.
+# Pinned where the separator under test can carry the assignment, which adds nothing new to filter.
+BYTE_LOCALE = "LC_ALL=C"
 
-# Github OAuth token used for creating an automatic issue for unhandled exceptions.
-GITHUB_REPORT_OAUTH_TOKEN = "YjNiYjdhZDBlYzM2MmM2NGEzYTAzZTc4ZDg1NmYwZTUyZGZlN2EyZQ=="
+# The same locale, exported - what a measurement taken by a command of its own ('expr length') needs, since an assignment the shell keeps to itself never reaches one.
+BYTE_LOCALE_EXPORTED = "export " + BYTE_LOCALE
 
-# Tranform payloads (via tamper script(s))
-TRANFROM_PAYLOAD = None
+# What a crash report may not carry. Named twice over, because one pass is not enough.
+#
+# The values come first: whatever these options were given is masked wherever it turns up, not only
+# where it follows the option's own name - a credential read back inside a stack trace, a URL
+# rebuilt into a message, a path printed by something else all leak past a pattern written around
+# the command line. Named by the parser's own destination, so an alias cannot miss.
+SENSITIVE_VALUE_OPTIONS = ("url", "data", "cookie", "host", "referer", "header", "headers",
+                           "proxy", "proxy_cred", "proxy_file", "auth_cred", "auth_data",
+                           "auth_url", "auth_file", "oob_token", "csrf_token", "csrf_data",
+                           "csrf_url", "safe_url", "second_url", "reg_data")
+
+# And the command line itself, for a value that never reached an option - a typo, or a run that
+# died before the parser finished. Matched on the option as typed, aliases and all.
+SENSITIVE_OPTIONS = ["--data", "--data-raw", "-d", "--cookie", "-p", "--url", "-u", "-x",
+                     "--auth-cred", "--auth-creds", "--auth-data", "--auth-url", "--auth-file",
+                     "--proxy-cred", "--proxy-file", "--oob-token", "-r", "-l",
+                     "--proxy", "--header", "-H", "--headers", "--load-cookies", "--live-cookies",
+                     "--csrf-token", "--csrf-data", "--csrf-url", "--reg-data",
+                     "--safe-url", "--second-url", "--host", "--referer"]
 
 CAPTCHA_DETECED = None
 
@@ -1014,39 +2758,494 @@ BROWSER_VERIFICATION = None
 # Regular expression used for recognition of generic "your ip has been blocked" messages.
 BLOCKED_IP_REGEX = r"(?i)(\A|\b)ip\b.*\b(banned|blocked|block list|firewall)"
 
+BLOCKED_IP_DETECTED = None
+
+"""
+Regular expressions used for parsing shell and interpreter errors out of a response ('--parse-errors').
+
+Each one is a signature rather than a guess at what an error looks like, because what makes these
+worth printing is that they cannot be anything else: a page saying them ran what it was given and
+could not make sense of it, which is a different answer from a parameter that never reached a shell.
+"""
+SHELL_ERROR_REGEXES = (
+  # POSIX shells, naming themselves before whatever they could not do.
+  r"(?P<result>[\w./\\-]{0,64}sh: [^\n]{0,192}?(?:command not found|not found|[Ss]yntax error|unexpected|[Uu]nterminated|[Pp]ermission denied|[Nn]o such file or directory|cannot (?:open|create|execute))[^\n]{0,96})",
+  # Windows command interpreter.
+  r"(?P<result>'[^'\n]{1,64}' is not recognized as an internal or external command[^\n]{0,64})",
+  r"(?P<result>The syntax of the command is incorrect\.)",
+  r"(?P<result>The system cannot find the (?:path|file) specified\.)",
+  # PHP, reporting from the function the payload landed in.
+  r"(?P<result>(?:Warning|Notice|Fatal error|Parse error)[^\n]{0,192}?(?:shell_exec|passthru|proc_open|pcntl_exec|popen|system|exec|eval)\(\)[^\n]{0,160})",
+  r"(?P<result>[^\n]{0,96}?has been disabled for security reasons[^\n]{0,32})",
+  # What an interpreter says about code it could not parse, whichever one it is.
+  r"(?P<result>[^\n]{0,64}?syntax error, unexpected [^\n]{1,128})",
+  r"(?P<result>[^\n]{0,96}?syntax error at [^\n]{1,96} line \d+[^\n]{0,64})",
+  r"(?P<result>(?:Syntax|Name|Type|Value|Import|ModuleNotFound|Attribute|Indentation|Reference|OS|FileNotFound|Permission)Error\s*:\s*[^\n]{1,160})",
+  r"(?P<result>Can't locate [^\n]{1,96} in @INC[^\n]{0,64})",
+)
+
+"""
+What has to be on a page before it is worth taking apart for the above.
+
+The set above is run over a page with its markup taken out, and doing that to every response a run
+makes is work worth skipping - so a page is first looked at as it arrived, for the plain text that
+every one of those signatures has to contain. Substrings rather than one alternation of them,
+because a pattern of this many branches costs more to not match than these do to be looked for.
+"""
+SHELL_ERROR_HINTS = ("sh:", "syntax error", "Error", "not recognized as an internal",
+                     "syntax of the command", "cannot find the", "disabled for security reasons",
+                     "exec", "passthru", "proc_open", "popen", "system()", "eval()", "@INC")
+
+"""
+What the current target has been found vulnerable at, for the CSV '--results-file' keeps.
+
+Gathered per target and written when it is finished with, so that one row stands for a parameter
+rather than for each technique that answered through it.
+"""
+"""
+What '--test-filter' and '--test-skip' were given, compiled once.
+
+Kept here rather than read from the option each time, because what the option holds is what the user
+typed and what a boundary is measured against is a pattern - working that out per combination, over
+every technique, is the same answer arrived at thousands of times.
+"""
+TEST_FILTER = None
+TEST_SKIP = None
+
+"""
+The functions '--preprocess' and '--postprocess' were given, loaded once.
+
+Held as functions rather than as the paths they came from, because a script is read and checked
+before the first target is touched and then called for every request the run makes.
+"""
+PREPROCESS_FUNCTIONS = []
+POSTPROCESS_FUNCTIONS = []
+
+RESULTS_FILE_ROWS = {}
+
+# What the file is called where a run over several targets was not given a name for it.
+RESULTS_FILE_FORMAT = "results-%m%d%Y_%I%M%p.csv"
+
+# Written the first time a row is, and only then - an existing file is added to, not started again.
+RESULTS_FILE_STARTED = False
+
+# Said once each, so a page answering the same way to every payload is not reported once per request.
+PARSED_ERRORS = set()
+
+# Whether one was seen at all, which is worth saying even where they were not printed.
+SHELL_ERROR_SEEN = False
+
 # Prefix for Google analytics cookie names
-GOOGLE_ANALYTICS_COOKIE_PREFIX = "__UTM"
+GOOGLE_ANALYTICS_COOKIE_REGEX = r"(?i)\A(_ga|_gid|_gat|_gcl_au|__utm[abcz])"
 
 # Default path for tamper scripts
-TAMPER_SCRIPTS_PATH = "src/core/tamper/"
+TAMPER_SCRIPTS_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../',"tamper/")) + "/"
 
 # Default path for settings.py file
-SETTINGS_PATH = os.path.abspath("src/utils/settings.py")
+SETTINGS_PATH = os.path.abspath(__file__)
 
 # Period after last-update to start nagging (about the old revision).
 NAGGING_DAYS = 31
 
-LINUX_DEFAULT_DOC_ROOTS = ["/var/www/", "/var/www/html", "/var/www/htdocs", "/usr/local/apache2/htdocs", "/usr/local/www/data", "/var/apache2/htdocs", "/var/www/nginx-default", "/srv/www/htdocs"]  # Reference: https://wiki.apache.org/httpd/DistrosDefaultLayout
-DEFINED_WEBROOT = False
+# Stamp of the stored-session layout, part of every table name so that entries written by an
+# earlier layout are never read back into a newer one; bump it whenever that layout changes.
+SESSION_MILESTONE_VALUE = "sBxrpPDiKF"
+
+TARGET_URL = ""
+# Host:port (matches session_handler.table_name()'s hashing), unlike TARGET_URL above.
+TARGET_NETLOC = ""
+DOC_ROOT_TARGET_MARK = "%TARGET%"
+
+# Windows common document roots
+WINDOWS_DEFAULT_DOC_ROOTS = [
+                  "C:\\Inetpub\\wwwroot\\",    # IIS default
+                  "C:\\xampp\\htdocs\\",       # XAMPP default
+                  "C:\\wamp\\www\\",           # WAMP default
+                  "C:\\laragon\\www\\",        # Laragon default
+                  "D:\\Inetpub\\wwwroot\\",    # IIS on D: drive (less common)
+]
+# Linux common document roots
+LINUX_DEFAULT_DOC_ROOTS = [
+                  "/var/www/html/",                                      # Debian/Ubuntu Apache default
+                  "/var/www/" + DOC_ROOT_TARGET_MARK + "/public_html/",  # Older Debian/Ubuntu with custom doc root
+                  "/var/www/" + DOC_ROOT_TARGET_MARK + "/",              # Alternative Debian/Ubuntu
+                  "/usr/share/nginx/html/",                              # Nginx default
+                  "/usr/local/apache2/htdocs/",                          # Apache default (source build)
+                  "/usr/local/www/data/",                                # BSD-style
+                  "/var/apache2/htdocs/",                                # Older Apache distros
+                  "/var/www/nginx-default/",                             # Nginx variation
+                  "/srv/www/htdocs/",                                    # SUSE/Fedora style
+                  "/usr/local/lsws/DEFAULT/html/"                        # LiteSpeed default
+]
+
+# Broader prefixes '--web-root'(interactive)'s brute-force search combines with the suffixes below -
+# independent of, and wider than, the common-location lists above.
+BRUTE_DOC_ROOT_PREFIXES = {
+  OS.WINDOWS: ("C:\\inetpub\\wwwroot", "C:\\xampp\\htdocs", "C:\\wamp\\www", "C:\\wamp64\\www", "C:\\laragon\\www", "C:\\Program Files\\Apache Group\\Apache2\\htdocs", "C:\\inetpub\\vhosts\\" + DOC_ROOT_TARGET_MARK),
+  OS.UNIX: ("/var/www", "/var/www/" + DOC_ROOT_TARGET_MARK, "/var/www/vhosts/" + DOC_ROOT_TARGET_MARK, "/var/www/virtual/" + DOC_ROOT_TARGET_MARK, "/var/www/clients/vhosts/" + DOC_ROOT_TARGET_MARK, "/var/www/clients/virtual/" + DOC_ROOT_TARGET_MARK, "/var/www/html", "/usr/local/apache2/htdocs", "/usr/local/www/data", "/srv/www", "/srv/http", "/usr/share/nginx/html", "/opt/lampp/htdocs", "/Library/WebServer/Documents", "/opt/homebrew/var/www"),
+}
+BRUTE_DOC_ROOT_SUFFIXES = ("", "html", "htdocs", "httpdocs", "php", "public", "public_html", "src", "site", "build", "web", "www", "data", "sites/all", "www/build")
+
+# The candidate directories still untried from the last directory-choice menu, nearest first - the
+# one commix is already using is not in it, so a write failure pops straight to the next untried one.
+WEB_ROOT_CANDIDATES = []
+
+# Whether an auto-detected web root (or the directory-choice menu) has already had its one turn to
+# be preferred without asking - cleared once isn't "still auto-detected" on the next retry, or every
+# failed write would keep re-trying the same path instead of moving on to the next candidate.
+WEB_ROOT_SETTLED_ONCE = False
+
+# Whether the generic "looking for a writable directory" notice has already been said once at
+# default verbosity - a retry cycling through several candidates says it once, not once per
+# candidate; '-v' above 0 still names every one of them as it goes.
+WRITABLE_DIR_ATTEMPT_SAID = False
+
+# Which directory-choice menu answer the current web-root candidates came from (e.g. "common
+# location(s)", "custom location(s)") - named at default verbosity instead of each path in turn,
+# which only '-v' above 0 does. Empty where the root came from auto-detection, not the menu.
+WEB_ROOT_CATEGORY_LABEL = ""
+
+"""
+The answer the directory-choice menu already got, as (candidates, label).
+
+A pass that retries with a tamper script walks the candidates again, so the menu's own question
+would otherwise be put a second and a third time - the same question, to someone who answered it
+before the first retry was even offered. None where it has not been asked yet.
+"""
+WEB_ROOT_CHOICE = None
+
+"""
+Where each web server commix recognises keeps its document root, per platform.
+
+Named rather than indexed, so the lists above can be reordered or added to without silently handing
+a target somebody else's directory. A server missing from a platform has no default worth guessing.
+"""
+SERVER_DOC_ROOTS = {
+  # Tomcat names itself "Apache Tomcat" or "Apache-Coyote", so it is looked for before Apache is.
+  "coyote":        {OS.WINDOWS: "C:\\Program Files\\Apache Software Foundation\\Tomcat\\webapps\\ROOT\\",
+                    OS.UNIX: "/var/lib/tomcat/webapps/ROOT/"},
+  "tomcat":        {OS.WINDOWS: "C:\\Program Files\\Apache Software Foundation\\Tomcat\\webapps\\ROOT\\",
+                    OS.UNIX: "/var/lib/tomcat/webapps/ROOT/"},
+  "microsoft-iis": {OS.WINDOWS: "C:\\Inetpub\\wwwroot\\"},
+  "apache":        {OS.WINDOWS: "C:\\xampp\\htdocs\\", OS.UNIX: "/var/www/html/"},
+  "openresty":     {OS.WINDOWS: "C:\\openresty\\html\\", OS.UNIX: "/usr/share/nginx/html/"},
+  "nginx":         {OS.WINDOWS: "C:\\nginx\\html\\", OS.UNIX: "/usr/share/nginx/html/"},
+  "litespeed":     {OS.UNIX: "/usr/local/lsws/DEFAULT/html/"},
+  "lighttpd":      {OS.UNIX: "/var/www/html/"},
+  "jetty":         {OS.UNIX: "/var/lib/jetty/webapps/ROOT/"},
+  "caddy":         {OS.UNIX: "/usr/share/caddy/"},
+}
+
+DEFINED_WEBROOT = RECHECK_FILE_FOR_EXTRACTION = False
 
 # HTTP Headers
 COOKIE = "Cookie"
 HOST = "Host"
 USER_AGENT = "User-Agent"
 REFERER = "Referer"
-HTTP_ACCEPT_HEADER = "Accept"
-
+ACCEPT = "Accept"
+ACCEPT_LANGUAGE = "Accept-Language"
+ACCEPT_ENCODING = "Accept-Encoding"
+AUTHORIZATION = "Authorization"
+CONTENT_LENGTH = "Content-Length"
+CONNECTION = "Connection"
+TRANSFER_ENCODING = "Transfer-Encoding"
+PROXY_CONNECTION = "Proxy-Connection"
+IF_MODIFIED_SINCE = "If-Modified-Since"
+IF_NONE_MATCH = "If-None-Match"
+CONTENT_TYPE = "Content-Type"
+# A page that answers with the token itself, rather than with a page holding it.
+PLAIN_TEXT_CONTENT_TYPE = "text/plain"
+OK_RESPONSE_CODE = 200
+SERVER = "Server"
+SET_COOKIE = "Set-Cookie"
+X_POWERED_BY = "X-Powered-By"
 # HTTP Headers values
-HTTP_ACCEPT_HEADER_VALUE = "*/*"
+ACCEPT_VALUE = "*/*"
+"""
+What a browser asks for, sent in place of the catch-all above once the request is meant to read as
+one. Kept to what every browser sends, so what the target is asked for does not change with it.
+"""
+HTTP_ACCEPT_BROWSER_VALUE = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+HTTP_ACCEPT_LANGUAGE_BROWSER_VALUE = "en-US,en;q=0.5"
+# What a body is sent as, unless it is recognised as one of the two below.
+DEFAULT_HTTP_CONTENT_TYPE_VALUE = "application/x-www-form-urlencoded"
+HTTP_CONTENT_TYPE_JSON_HEADER_VALUE = "application/json"
+HTTP_CONTENT_TYPE_XML_HEADER_VALUE = "application/xml"
+HTTP_CONTENT_TYPE_GRAPHQL_HEADER_VALUE = "application/graphql"
+# Only what the response handling can actually decompress is asked for.
+"""
+The encodings a response may arrive in.
 
-# Regular expression used for ignoring some special chars
-IGNORE_SPECIAL_CHAR_REGEX = "[^/(A-Za-z0-9.:,_]+"
+Only what can be read back is asked for: a page that arrives in an encoding with no decoder is a
+page that cannot be searched for anything, and the target has no way of knowing that.
+"""
+try:
+  from src.utils import brotli as _brotli
+except ImportError:
+  try:
+    import brotli as _brotli
+  except ImportError:
+    try:
+      import brotlicffi as _brotli
+    except ImportError:
+      _brotli = None
+try:
+  from compression import zstd as _zstd    # Python 3.14+ carries it in the standard library
+except ImportError:
+  _zstd = None
+
+try:
+  from src.thirdparty.chardet import detect as _detect_charset
+except ImportError:
+  try:
+    from chardet import detect as _detect_charset
+  except ImportError:
+    try:
+      from charset_normalizer import detect as _detect_charset
+    except ImportError:
+      _detect_charset = None
+
+CHARSET_DETECTOR = _detect_charset
+# The named entities a page may be written with, as the characters a browser would read them as -
+# taken from the platform's own table rather than kept as a list of our own.
+try:
+  from html.entities import name2codepoint as _name2codepoint
+except ImportError:
+  from htmlentitydefs import name2codepoint as _name2codepoint
+HTML_ENTITIES = dict(_name2codepoint)
+# How much of a page is enough to guess what it is written in.
+HEURISTIC_PAGE_SIZE_THRESHOLD = 20 * 1024
+# The charset a page declares, read out of its own head.
+META_CHARSET_REGEX = r"""(?si)<head\b[^>]*>(?:(?!</head>).)*?<meta[^>]{0,300}?charset\s*=\s*["']?(?P<result>[^"'> ]+)"""
+# Names a page may declare itself in that are not the names the codecs are registered under.
+CHARSET_ALIASES = {
+  "windows-874" : "iso-8859-11", "utf-8859-1" : "utf8", "en_us" : "utf8", "macintosh" : "iso-8859-1",
+  "euc_tw" : "big5_tw", "th" : "tis-620", "unicode" : "utf8", "utc8" : "utf8", "ebcdic" : "ebcdic-cp-be",
+  "iso-8859" : "iso8859-1", "iso-8859-0" : "iso8859-1", "ansi" : "ascii", "gbk2312" : "gbk",
+  "windows-31j" : "cp932", "en" : "us"
+}
+
+BROTLI_DECODER = _brotli
+ZSTD_DECODER = _zstd
+HTTP_ACCEPT_ENCODING_HEADER_VALUE = "gzip,deflate" + (",br" if _brotli is not None else "") + (",zstd" if _zstd is not None else "")
+# What is asked for instead, once a page has come back as something other than what it declared.
+HTTP_ACCEPT_ENCODING_IDENTITY = "identity"
+PAGE_COMPRESSION = True
+# The most a page is decompressed into: a small response can name a very large one, and reading it
+# whole is how a target with nothing to hide empties this machine's memory.
+MAX_PAGE_SIZE = 100 * 1024 * 1024
+
+# The web server named by the 'Server' header, and the ones that are recognised.
+SERVER_BANNER = ""
+
+"""
+Which of several same-named parameters an application reads, by the platform serving it.
+
+Sending a parameter twice is only an evasion where the two are read by different things: a filter
+looking at one occurrence, and the application at another. Which one the application takes is the
+platform's to decide, so where the banner says what is serving the page, that is what decides where
+the payload goes - and where it says nothing, the payload goes last, which is what the most commonly
+tested platforms read.
+"""
+HPP_LAST_WINS = ("php", "nginx", "rails", "ruby", "apache")
+HPP_FIRST_WINS = ("jsp", "tomcat", "jetty", "coldfusion", "java")
+HPP_CONCATENATES = ("asp", "asp.net", "aspx", "iis")
+
+# Said once for the run, however many parameters are polluted.
+HPP_POSITION_SAID = False
+
+# Said once for the run, however many connections try to present the certificate.
+PKI_FAILURE_SAID = False
+# The version that server named for itself, where it named one.
+SERVER_VERSION = ""
+SERVER_BANNERS = [
+    "Microsoft-IIS",
+    # Ahead of the bare "Apache" below: Tomcat names itself with it, and keeps its own document root.
+    r"Apache[ -](?:Tomcat|Coyote)/?([\w\.]+)?",
+    "Apache",
+    r"Nginx/([\w\.]+)",
+    r"Jetty\(?([\w\.]+)?\)?",
+    r"Caddy",
+    r"GWS/([\w\.]+)",
+    r"lighttpd/([\w\.]+)",
+    r"openresty/([\w\.]+)",
+    r"LiteSpeed/([\w\.]+)",
+    r"Sun-ONE-Web-Server/([\w\.]+)"
+]
+
+# HTTP Headers
+HTTP_HEADERS = [ USER_AGENT.lower(), REFERER.lower(), HOST.lower() ]
+SHELLSHOCK_HTTP_HEADERS =[ COOKIE, USER_AGENT, REFERER ]
+
+# Where a payload is carried, named by whatever dispatched the parameter rather than worked out
+# from its name - a body field called 'host' is a body field, not the header it shares a name with.
+CUSTOM_HEADER_PLACE = "(custom) HEADER"
+HTTP_HEADER_PLACES = [ USER_AGENT, REFERER, HOST, CUSTOM_HEADER_PLACE ]
+
+# The names a standard header answers to, so '-p'/'--skip' can name one as it is written.
+HTTP_HEADER_ALIASES = {
+                        USER_AGENT : ( "ua", "useragent", "user-agent" ),
+                        REFERER : ( "ref", "referer", "referrer" ),
+                        HOST : ( "host", ),
+                      }
+
+IGNORE_JSON_CHAR_REGEX = r"[{}\"\[\]]"
+
+FLATTEN_JSON_SEPARATOR = ''.join(random.choice("{}") for _ in range(10)) + "_"
+JSON_ENUMERATION_STARTED = False
 
 PERFORM_CRACKING = False
 
-PAGE_COMPRESSION = None
-
 # Force usage of given HTTP method (e.g. PUT).
 HTTP_METHOD = ""
+
+DECLARED_COOKIES = ""
+
+MULTI_TARGETS = False
+
+# Identified Redirect code
+REDIRECT_CODE = ""
+
+# Base64 padding
+BASE64_PADDING = "=="
+
+# Crawling phase
+CRAWLING = CRAWLING_PHASE = False
+CRAWLED_SKIPPED_URLS_NUM = 0
+CRAWLED_URLS_NUM = 0
+CRAWLED_URLS_INJECTED = []
+SKIP_VULNERABLE_HOST = None
+
+# Skipped crawled hrefs
+HREF_SKIPPED = []
+
+# Abort on (problematic) HTTP error code (e.g. 401).
+ABORT_CODE = []
+
+# Ignore on (problematic) HTTP error code (e.g. 401).
+IGNORE_CODE = []
+
+# What '--ignore-code' is given to mean every code rather than a list of them - a target answering
+# with a different error for each of several reasons is one nobody wants to enumerate by hand.
+IGNORE_CODE_WILDCARD = "*"
+# HTTP error codes already warned about, kept apart from what the user chose to ignore.
+WARNED_HTTP_ERROR_CODES = set()
+
+# Default crawling depth
+DEFAULT_CRAWLING_DEPTH = 1
+
+# Matches a "key=" pair with an empty value in a query/POST-data string, bounded by '&' or start/end.
+EMPTY_FORM_FIELDS_REGEX = r'(&|\A)(?P<result>[^=&]+=)(?=&|\Z)'
+
+SITEMAP_CHECK = None
+
+SITEMAP_XML_FILE = "sitemap.xml"
+
+FOLLOW_REDIRECT = True
+
+# Set predefined answers (e.g. "quit=N,follow=N").
+ANSWERS = ""
+
+CHECKING_PARAMETER = ""
+
+# Run host OS command(s) when injection point is found.
+ALERT = False
+
+PCRE_MODIFIER = "/e"
+
+
+"""
+State that belongs to the run and not to any one target: what the user asked for on the command
+line, what has already been answered once and should not be asked again, and the tallies kept
+across every target. Everything else is taken back to what it held before the first target, so
+that nothing worked out about one target is read as true of the next. A new name is per-target
+unless it is listed here - the omission that used to leak is now the safe direction.
+"""
+RUN_WIDE_STATE = frozenset((
+  # Asked for on the command line, or worked out from it before any target was touched.
+  "ABORT_CODE", "ALERT", "ANSWERS", "CHECK_FOR_UPDATES_ON_START", "CHECK_INTERNET",
+  "CHECK_INTERNET_ADDRESS", "CLI_HISTORY", "CONNECTION_ERROR_RETRIES", "COOKIE_PARAM_DELIMITER",
+  "DEFAULT_CODEC", "DEFAULT_CRAWLING_DEPTH", "DEFAULT_PAGE_ENCODING", "DELAY", "EXTRA_HTTP_HEADERS",
+  "HTTP_METHOD", "IGNORE_CODE", "INJECT_TAG", "KEEP_ALIVE", "LHOST", "LINUX_PYTHON_INTERPRETER",
+  "LPORT", "MAXLEN", "MAX_RETRIES", "METASPLOIT_PATH", "OOB_IGNORE_TIMEOUT", "OOB_POLL_INTERVAL",
+  "OOB_PORT", "OOB_SCHEME", "OOB_SERVER", "OOB_TOKEN", "OOB_TRANSPORT", "PERFORM_CRACKING",
+  "POST_CUSTOM_INJECTION_MARKER_CHAR", "PRE_CUSTOM_INJECTION_MARKER_CHAR", "RAW_HTTP_HEADERS",
+  "REPORT_JSON", "REPORT_STARTED", "REPORT_TARGETS", "RHOST", "SKIP_CALC", "SKIP_SUBST", "SKIP_PARAMETERS_LIST", "SKIP_TECHNIQUES", "SRVPORT",
+  "THREADS", "TIMEOUT", "TMP_PATH", "TOR_HTTP_PROXY_PORT", "URIPATH", "URL_PARAM_DELIMITER",
+  "URL_RELOAD", "USER_DEFINED_PHP_DIR", "USER_DEFINED_PYTHON_DIR", "USER_DEFINED_PYTHON_INTERPRETER",
+  "VERBOSITY_LEVEL", "WIN_PHP_DIR", "WIN_PYTHON_INTERPRETER",
+  "USER_APPLIED_AUTH_CRED", "USER_APPLIED_AUTH_TYPE", "USER_APPLIED_CMD", "USER_APPLIED_COOKIE",
+  "USER_APPLIED_DATA", "USER_APPLIED_LEVEL", "USER_APPLIED_MODULE", "USER_APPLIED_RETRIES",
+  "USER_APPLIED_TAMPER",
+  "USER_APPLIED_TECHNIQUE", "USER_APPLIED_WEB_ROOT", "USER_APPLIED_INTERPRETER",
+  "USER_APPLIED_TIMESEC", "USER_APPLIED_TMP_PATH",
+  # Answered once by the user, and not worth asking again for every target. The four retry consents
+  # belong here for the reason the WAF/IPS one does: each asks whether to pay for another pass around
+  # an obstacle, and an answer given once covers every target the same way, since what is being
+  # answered is whether that pass is worth its cost at all.
+  "ADJUST_TIME_DELAY_CHOICE", "BACKTICK_RETRY_CHOICE", "DASHLESS_RETRY_CHOICE",
+  "FILE_BASED_NARROWING_CHOICE",
+  "IGNORE_IDENTIFIED_TARGET_OS", "IGNORE_NOT_FOUND", "NOT_FOUND_PROMPTED", "UNSTABLE_PROMPTED",
+  "RECOGNISE_OS", "REPLACE_VALUE_RETRY_CHOICE", "THREADED_TIME_RETRIEVAL_CHOICE",
+  "USE_BIN_SUBDIR_CHOICE", "WAF_EVASION_CONSENT", "WHITESPACE_RETRY_CHOICE",
+  # Counted or noted for the run as a whole.
+  "CRAWLED_SKIPPED_URLS_NUM", "CRAWLED_URLS_INJECTED", "CRAWLED_URLS_NUM", "CRAWLING",
+  "CRAWLING_PHASE", "ENUMERATION_DONE", "FILE_ACCESS_DONE", "REGISTRY_ACCESS_DONE", "HANDLER", "HREF_SKIPPED",
+  # 'LAST_LOG_GROUP', 'LAST_LOGGED_PARAMETER' and 'LOGGED_FINDINGS_HEADER' are deliberately absent:
+  # each target writes a log file of its own, so what has already been written to one says nothing
+  # about the next, and carried over they cost the second its header and its parameter line.
+  "HTTP_ERROR_CODES_SUM", "IDENTIFIED_WARNINGS", "INIT_TEST", "LAST_DOT_BUCKET",
+  "LAST_SELECTED_MODULE", "LIKELY_RESUME",
+  "MULTI_REQUEST_TARGETS", "MULTI_TARGETS", "OS_CHECKS_NUM", "PROGRESS_LINE_OPEN", "READLINE_ERROR",
+  "SESSION_FILE", "SHOW_LOGS_MSG", "TAMPER_SCRIPTS", "SITEMAP_CHECK", "SKIPPED_OUT_OF_SCOPE", "SKIP_VULNERABLE_HOST",
+  "RESULTS_FILE_FORMAT", "RESULTS_FILE_STARTED", "TEST_FILTER", "TEST_SKIP",
+  "PREPROCESS_FUNCTIONS", "POSTPROCESS_FUNCTIONS",
+  "BOOLEAN_THREADS_SUGGESTED", "TEMPFILE_ORACLE_ANNOUNCED", "TEMPFILE_TIME_FALLBACK_ANNOUNCED", "HPP_POSITION_SAID", "PKI_FAILURE_SAID", "REPLAY_NOTICES_SAID", "STDIN_PARSING", "TAMPER_WARNING_SHOWN", "TIME_RELATED_ATTACK_WARNING", "TOTAL_OF_REQUESTS", "EVAL_SUGGESTED", "COMMAND_SUGGESTED",
+  "VALIDATION_RUN", "VISIBLE_CONNECTION_ERRORS", "WARNED_HTTP_ERROR_CODES",
+  # Set by the connection to whichever target is in hand, before this reset can be reached.
+  "HOSTNAME", "SCHEME", "TARGET_NETLOC", "TARGET_URL",
+))
+
+"""
+Options a target's own testing can change - a stored session replaces them, a technique settles a
+directory - and which the next target is entitled to see as the user left them.
+"""
+RESTORED_OPTIONS = ("cookie", "data", "tamper", "os", "web_root", "tmp_path", "timesec",
+                    "auth_cred", "auth_type", "level", "tech")
+
+_TARGET_STATE_BASELINE = {}
+_OPTIONS_BASELINE = {}
+# Only values that can be copied without carrying a live object along with them.
+_COPYABLE = (str, int, float, bool, type(None), list, dict, set, tuple, frozenset)
+
+"""
+Take the per-target state back to what it was before the first target was touched. The first call
+records that baseline - at that point nothing has been learned yet - and every call after it
+restores. Names listed in 'RUN_WIDE_STATE' are left alone.
+"""
+def reset_target_state(options=None):
+  import copy
+  if not _TARGET_STATE_BASELINE:
+    for name, value in list(globals().items()):
+      if not name.isupper() or name.startswith("_") or name in RUN_WIDE_STATE:
+        continue
+      if not isinstance(value, _COPYABLE):
+        continue
+      try:
+        _TARGET_STATE_BASELINE[name] = copy.deepcopy(value)
+      except Exception:
+        continue
+    if options is not None:
+      for name in RESTORED_OPTIONS:
+        if hasattr(options, name):
+          _OPTIONS_BASELINE[name] = copy.deepcopy(getattr(options, name))
+    return
+
+  for name, value in _TARGET_STATE_BASELINE.items():
+    globals()[name] = copy.deepcopy(value)
+  if options is not None:
+    for name, value in _OPTIONS_BASELINE.items():
+      setattr(options, name, copy.deepcopy(value))
 
 # eof

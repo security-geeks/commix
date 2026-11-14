@@ -1,20 +1,36 @@
+name: 'Builds'
+
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
 
+# Nothing here writes back to the repository.
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: [ '2.x', '3.10', 'pypy-2.7', 'pypy-3.7' ]
+        # Pairs are listed explicitly rather than crossed: Python 3.7 is published for x64 images
+        # only - Linux up to 22.04 and Intel macOS runners - so it cannot be installed on
+        # 'ubuntu-latest' (24.04) or ARM64 macOS runners.
+        include:
+          - { os: ubuntu-22.04, python-version: '3.7' }
+          - { os: macos-15-intel, python-version: '3.7' }
+          - { os: windows-latest, python-version: '3.7' }
+          - { os: ubuntu-latest,  python-version: '3.12' }
+          - { os: macos-latest,   python-version: '3.12' }
+          - { os: windows-latest, python-version: '3.12' }
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up Python
-        uses: actions/setup-python@v2
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - name: Basic import test

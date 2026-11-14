@@ -3,129 +3,311 @@
 
 """
 This file is part of Commix Project (https://commixproject.com).
-Copyright (c) 2014-2021 Anastasios Stasinopoulos (@ancst).
+Copyright (c) 2014-2026 Anastasios Stasinopoulos (@ancst).
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
- 
+
 For more see the file 'readme/COPYING' for copying permission.
 """
+import os
 import re
-import sys
+import random
+import string
 import tempfile
-from src.utils import menu
+from src.core.parse import cmdline as menu
 from src.utils import settings
-from src.core.injections.controller import checks
-from src.core.requests import headers
-from src.thirdparty.six.moves import input as _input
+from src.utils import common
+from src.core.controller import checks
+from src.core.requests import requests
 from src.thirdparty.six.moves import urllib as _urllib
-from src.thirdparty.colorama import Fore, Back, Style, init
 from src.thirdparty.beautifulsoup.beautifulsoup import BeautifulSoup
 
-SITEMAP_LOC = []
-HREF_LIST = []
-SKIPPED_URLS = 0
 
-def store_crawling():
+"""
+Empty at import, and emptied again before each crawl.
+
+A run that reaches these without having crawled - a sitemap handed in on its own, which never starts
+a crawl - would otherwise find them missing rather than empty, and fail on the name instead of
+reporting that there was nothing usable in it.
+"""
+crawled_hrefs = []
+sitemap_loc = []
+visited_sitemaps = []
+visited_hrefs = []
+new_crawled_hrefs = []
+crawled_forms = []
+
+# Clear what the last crawl left behind, so this one starts from nothing.
+def init_global_vars():
+  global crawled_hrefs
+  crawled_hrefs = []
+  global sitemap_loc
+  sitemap_loc = []
+  global visited_sitemaps
+  visited_sitemaps = []
+  global visited_hrefs
+  visited_hrefs = []
+  global new_crawled_hrefs
+  new_crawled_hrefs = []
+  global crawled_forms
+  crawled_forms = []
+
+"""
+Change the crawling depth level.
+"""
+def set_crawling_depth():
   while True:
-    if not menu.options.batch:
-      question_msg = "Do you want to store crawling results to a temporary file "
-      question_msg += "(for eventual further processing with other tools)? [y/N] > "
-      message = _input(settings.print_question_msg(question_msg))
-    else:
-      message = ""
-    if len(message) == 0:
-       message = "n"
-    if message in settings.CHOICE_YES:
-      filename = tempfile.mkstemp(suffix=".txt")[1]
-      info_msg = "Writing crawling results to a temporary file '" + str(filename) + "'."
-      print(settings.print_info_msg(info_msg))
-      return str(filename)
-    elif message in settings.CHOICE_NO:
-      return None
+    message = "Do you want to change the crawling depth level (" + str(menu.options.crawldepth) + ")? [y/N] "
+    message = common.read_input(message, default="N", check_batch=True)
+    if message in settings.CHOICE_YES or message in settings.CHOICE_NO:
+      break
     elif message in settings.CHOICE_QUIT:
       raise SystemExit()
     else:
-      err_msg = "'" + message + "' is not a valid answer."  
-      sys.stdout.write(settings.print_error_msg(err_msg))
-      sys.stdout.flush()
-      pass  
+      common.invalid_option(message)
+      pass
+
+  # Change the crawling depth level.
+  if message in settings.CHOICE_YES:
+    while True:
+      message = "Please enter the crawling depth level: "
+      message = common.read_input(message, default="1", check_batch=True)
+      menu.options.crawldepth = message
+      return
+
 
 """
-Do a request to target URL.
+Normalize crawling results.
 """
-def request(url):
-  global SKIPPED_URLS
-  try:
-    # Check if defined POST data
-    if menu.options.data:
-      request = _urllib.request.Request(url, menu.options.data.encode(settings.DEFAULT_CODEC))
+def normalize_results(output_href):
+  results = []
+  while True:
+    message = "Do you want to normalize crawling results? [Y/n] "
+    message = common.read_input(message, default="Y", check_batch=True)
+    if message in settings.CHOICE_YES:
+      # Dedupe by path and parameter names, keeping the first occurrence.
+      seen = set()
+      for target in output_href:
+        try:
+          parsed = _urllib.parse.urlparse(target)
+          if not parsed.query:
+            continue
+          # Keep blank-valued fields; their parameter names still belong in the dedup key.
+          param_names = tuple(sorted(_urllib.parse.parse_qs(parsed.query, keep_blank_values=True).keys()))
+          if not param_names:
+            continue
+          key = (parsed.path, param_names)
+          if key not in seen:
+            results.append(target)
+            seen.add(key)
+        except Exception:
+          pass
+      no_usable_links(results)
+      return results
+    elif message in settings.CHOICE_NO:
+      no_usable_links(output_href)
+      return output_href
+    elif message in settings.CHOICE_QUIT:
+      raise SystemExit()
     else:
-      request = _urllib.request.Request(url)
-    headers.do_check(request)
-    headers.check_http_traffic(request)
-    response = _urllib.request.urlopen(request, timeout=settings.TIMEOUT)
-    return response
-  except _urllib.error.URLError as err_msg:
-    err_msg = str(err_msg) + " - Skipping " + str(url) 
-    sys.stdout.write(settings.print_critical_msg(err_msg))
-    if settings.VERBOSITY_LEVEL >= 2:
-      print("")
-    SKIPPED_URLS += 1
+      common.invalid_option(message)
+      pass
 
 
+"""
+Store crawling results to a temporary file.
+"""
+def store_crawling(output_href):
+  try:
+    while True:
+      message = "Do you want to store crawling results to a temporary file "
+      message += "(for eventual further processing with other tools)? [y/N] "
+      message = common.read_input(message, default="N", check_batch=True)
+      if message in settings.CHOICE_YES:
+        handle, filename = tempfile.mkstemp(suffix=settings.OUTPUT_FILE_EXT)
+        info_msg = "Writing crawling results to a temporary file '" + str(filename) + "'."
+        settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+        # Written through the one the file was made with, the way the other two of these are: a
+        # file opened again by its name is a second opening of one already open, and the first is
+        # then left open for the rest of the run - along with the exclusive creation that is the
+        # whole reason for asking for it this way.
+        with os.fdopen(handle, 'w', encoding=settings.DEFAULT_CODEC) as crawling_results:
+          for url in output_href:
+            crawling_results.write(str(url.encode(settings.DEFAULT_CODEC).decode()) + settings.END_LINE.LF)
+        return
+      elif message in settings.CHOICE_NO:
+        return
+      elif message in settings.CHOICE_QUIT:
+        raise SystemExit()
+      else:
+        common.invalid_option(message)
+        pass
+  except Exception:
+    pass
+    
 """
 Check for URLs in sitemap.xml.
 """
-def sitemap(url):
+def sitemap(url, http_request_method):
   try:
     if not url.endswith(".xml"):
       if not url.endswith("/"):
         url = url + "/"
-      url = _urllib.parse.urljoin(url, "sitemap.xml")
-    response = request(url)
-    content = checks.page_encoding(response, action="decode")
+      url = _urllib.parse.urljoin(url, settings.SITEMAP_XML_FILE)
+    response = request(url, http_request_method)
+    content = checks.process_page_content(response, action="decode")
     for match in re.finditer(r"<loc>\s*([^<]+)", content or ""):
       url = match.group(1).strip()
-      SITEMAP_LOC.append(url)
-      if url.endswith(".xml") and "sitemap" in url.lower():
+      if url not in sitemap_loc:
+        sitemap_loc.append(url)
+      if url.endswith(".xml") and "sitemap" in url.lower() and url not in visited_sitemaps:
+        visited_sitemaps.append(url)
         while True:
           warn_msg = "A sitemap recursion detected (" + url + ")."
-          print(settings.print_warning_msg(warn_msg))
-          if not menu.options.batch:
-            question_msg = "Do you want to follow? [Y/n] > "
-            message = _input(settings.print_question_msg(question_msg))
-          else:
-            message = ""
-          if len(message) == 0:
-             message = "Y"
+          settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+          message = "Do you want to follow? [Y/n] "
+          message = common.read_input(message, default="Y", check_batch=True)
           if message in settings.CHOICE_YES:
-            sitemap(url)
+            sitemap(url, http_request_method)
             break
           elif message in settings.CHOICE_NO:
             break
           elif message in settings.CHOICE_QUIT:
             raise SystemExit()
           else:
-            err_msg = "'" + message + "' is not a valid answer."  
-            print(settings.print_error_msg(err_msg))
+            common.invalid_option(message)
             pass
-    return SITEMAP_LOC
-  except:
+    no_usable_links(sitemap_loc)
+    return sitemap_loc
+  except Exception:
+    if not menu.options.crawldepth:
+      raise SystemExit()
     pass
 
+
 """
-Grab the crawled hrefs.
+Store the identified (valid) hrefs.
 """
-def crawling(url):
+def store_hrefs(href, identified_hrefs, redirection):
+  if href not in crawled_hrefs:
+    if (settings.DEFAULT_CRAWLING_DEPTH != 1 and href not in new_crawled_hrefs) or redirection:
+      new_crawled_hrefs.append(href)
+    identified_hrefs = True
+    crawled_hrefs.append(href)
+  return identified_hrefs
+
+
+"""
+Extract form fields as (name, value) pairs, preserving blank values for the caller to fill.
+"""
+def extract_form_params(form):
+  params = []
+  for field in form.findAll(["input", "select", "textarea"]):
+    name = field.get("name")
+    if not name:
+      continue
+    field_type = (field.get("type") or "text").lower()
+    if field_type in ("submit", "button", "image", "reset", "file"):
+      continue
+    if field_type in ("checkbox", "radio") and field.get("checked") is None:
+      continue
+    value = ""
+    if field.name == "select":
+      option = field.find("option", selected=True) or field.find("option")
+      if option:
+        value = option.get("value") or option.text or ""
+    elif field.name == "textarea":
+      value = field.text or ""
+    else:
+      value = field.get("value") or ""
+    params.append((name, value))
+  return params
+
+"""
+Fill blank fields with a random int for id-like names or a random string otherwise.
+"""
+def random_fill_blank_fields(data):
+  # The field's value, as the form's own markup gives it.
+  def replacement(match):
+    item = match.group("result")
+    field_name = item[:-1]
+    new_value = str(random.randint(1, 9999)) if re.search(r"(?i)id", field_name) else \
+      ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
+    return match.group(1) + item + new_value
+  return re.sub(settings.EMPTY_FORM_FIELDS_REGEX, replacement, data)
+
+
+"""
+Store an identified (valid) POST form as an (action URL, POST data) pair.
+"""
+def store_forms(action_url, data):
+  entry = (action_url, data)
+  if entry not in crawled_forms:
+    crawled_forms.append(entry)
+
+
+"""
+Do a request to target URL.
+"""
+def request(url, http_request_method):
+  return requests.crawler_request(url, http_request_method)
+
+"""
+Enable crawler.
+"""
+def enable_crawler():
+  message = ""
+  if not settings.CRAWLING:
+    while True:
+      message = "Do you want to enable crawler? [y/N] "
+      message = common.read_input(message, default="N", check_batch=True)
+      if message in settings.CHOICE_YES:
+        menu.options.crawldepth = 1
+        break
+      if message in settings.CHOICE_NO:
+        break
+      elif message in settings.CHOICE_QUIT:
+        raise SystemExit()
+      else:
+        common.invalid_option(message)
+        pass
+    set_crawling_depth()
+
+"""
+Check for the existence of site's sitemap
+"""
+def check_sitemap():
+  message = "Do you want to check target"+ ('', 's')[settings.MULTI_TARGETS] + " for "
+  message += "the existence of site's sitemap(.xml)? [y/N] "
+  common.prompt_yes_no_setting(message, "SITEMAP_CHECK", default="N")
+
+"""
+Check if no usable links found.
+"""
+def no_usable_links(crawled_hrefs):
+  if len(crawled_hrefs) == 0 and len(crawled_forms) == 0:
+    warn_msg = "No usable links found (with GET parameters)."
+    settings.print_data_to_stdout(settings.print_warning_msg(warn_msg))
+    if not settings.MULTI_TARGETS:
+      raise SystemExit()
+
+"""
+The crawing process.
+"""
+def do_process(url, http_request_method):
+  identified_hrefs = False
+  if settings.CRAWLED_SKIPPED_URLS_NUM == 0 or settings.CRAWLED_URLS_NUM != 0:
+    settings.print_data_to_stdout(settings.END_LINE.CR)
+  # Grab the crawled hrefs.
   try:
-    response = request(url)
-    content = checks.page_encoding(response, action="decode")
+    response = request(url, http_request_method)
+    content = checks.process_page_content(response, action="decode")
     match = re.search(r"(?si)<html[^>]*>(.+)</html>", content)
     if match:
-      content = "<html>%s</html>" % match.group(1)
+      content = "<html>" + match.group(1) + "</html>"
     soup = BeautifulSoup(content)
     tags = soup('a')
     if not tags:
@@ -133,167 +315,112 @@ def crawling(url):
       tags += re.finditer(r'(?i)\s(href|src)=["\'](?P<href>[^>"\']+)', content)
       tags += re.finditer(r'(?i)window\.open\(["\'](?P<href>[^)"\']+)["\']', content)
     for tag in tags:
-      href = tag.get("href") if hasattr(tag, settings.HTTPMETHOD.GET) else tag.group("href")
+      href = tag.get("href") if hasattr(tag, "get") else tag.group("href")
       if href:
-        href = _urllib.parse.urljoin(url, href)
+        href = _urllib.parse.urljoin(url, _urllib.parse.unquote(href))
         if _urllib.parse.urlparse(url).netloc in href:
-          if not re.search(r"\?(v=)?\d+\Z", href) and not \
-          re.search(r"(?i)\.(js|css)(\?|\Z)", href) and \
-          href.split('.')[-1].lower() not in settings.CRAWL_EXCLUDE_EXTENSIONS:
-            if request(href): 
-              HREF_LIST.append(href)
-    if len(HREF_LIST) != 0:
-      return list(set(HREF_LIST))
-    else:
-      if not settings.VERBOSITY_LEVEL >= 2:
-        print(settings.SINGLE_WHITESPACE)
-      warn_msg = "No usable links found."
-      print(settings.print_warning_msg(warn_msg))
-      raise SystemExit()
-  except (UnicodeEncodeError, ValueError) as e:  # for non-HTML files and non-valid links
+          if (common.extract_regex_result(r"\A[^?]+\.(?P<result>\w+)(\?|\Z)", href) or "") not in settings.CRAWL_EXCLUDE_EXTENSIONS:
+            if not re.search(r"\?(v=)?\d+\Z", href) and not re.search(r"(?i)\.(js|css)(\?|\Z)", href):
+              if (menu.options.crawl_exclude and re.search(menu.options.crawl_exclude, href or "")) or not checks.in_scope(href):
+                if href not in visited_hrefs:
+                  visited_hrefs.append(href)
+                  if settings.VERBOSITY_LEVEL != 0:
+                    debug_msg = "Skipping URL " + href + "."
+                    settings.print_data_to_stdout(settings.print_debug_msg(debug_msg))
+              else:
+                identified_hrefs = store_hrefs(href, identified_hrefs, redirection=False)
+    # Named in the scripts a page loads, which nothing on the page links to.
+    if menu.options.mine_endpoints:
+      from src.core.requests import mining
+      for href in mining.mine_endpoints(url, content, http_request_method):
+        if checks.in_scope(href):
+          identified_hrefs = store_hrefs(href, identified_hrefs, redirection=False)
+
+    if menu.options.forms:
+      for form in soup('form'):
+        action_url = _urllib.parse.urljoin(url, form.get("action") or url)
+        if _urllib.parse.urlparse(url).netloc not in action_url:
+          continue
+        params = extract_form_params(form)
+        if not params:
+          continue
+        method = (form.get("method") or settings.HTTPMETHOD.GET).upper()
+        if method == settings.HTTPMETHOD.POST:
+          # Keep blank fields empty; main.py decides whether to fill them with a default or random value.
+          data = "&".join(_urllib.parse.quote(str(k), safe="") + "=" + _urllib.parse.quote(str(v), safe="") for k, v in params)
+          store_forms(action_url, data)
+        else:
+          # Keep blank fields empty; main.py fills them based on the per-URL prompt.
+          data = "&".join(_urllib.parse.quote(str(k), safe="") + "=" + _urllib.parse.quote(str(v), safe="") for k, v in params)
+          href = action_url + ("&" if "?" in action_url else "?") + data
+          identified_hrefs = store_hrefs(href, identified_hrefs, redirection=False)
+    no_usable_links(crawled_hrefs)
+    if identified_hrefs:
+      # Already deduped by store_hrefs(); list() keeps order stable.
+      if len(new_crawled_hrefs) != 0 and settings.DEFAULT_CRAWLING_DEPTH != 1:
+        return list(new_crawled_hrefs)
+      return list(crawled_hrefs)
+    return list("")
+
+  except Exception:  # for non-HTML files and non-valid links
     pass
 
-"""
-The crawing process.
-"""
-def do_process(url):
-  try:
-    crawled_href = []
-    for url in crawling(url):
-      crawled_href.append(url)
-    return crawled_href
-  except TypeError:
-    pass
 
 """
 The main crawler.
 """
-def crawler(url):
-  if not menu.options.sitemap_url:
-    if menu.options.crawldepth > 2:
-      err_msg = "Depth level '" + str(menu.options.crawldepth) + "' is not a valid."  
-      print(settings.print_error_msg(err_msg))
-      raise SystemExit()
-    info_msg = "Starting crawler and searching for "
-    info_msg += "links with depth " + str(menu.options.crawldepth) + "." 
-    print(settings.print_info_msg(info_msg))
+def crawler(url, url_num, crawling_list, http_request_method):
+  init_global_vars()
+  if crawling_list > 1:
+    counter = " (" + str(url_num) + "/" + str(crawling_list) + ")"
   else:
-    while True:
-      if not menu.options.batch:
-        question_msg = "Do you want to change the crawling depth level? [Y/n] > "
-        message = _input(settings.print_question_msg(question_msg))
-      else:
-        message = ""
-      if len(message) == 0:
-         message = "Y"
-      if message in settings.CHOICE_YES or message in settings.CHOICE_NO:
-        break  
-      elif message in settings.CHOICE_QUIT:
-        raise SystemExit()
-      else:
-        err_msg = "'" + message + "' is not a valid answer."  
-        print(settings.print_error_msg(err_msg))
-        pass
-    # Change the crawling depth level.
-    if message in settings.CHOICE_YES:
-      while True:
-        question_msg = "Please enter the crawling depth level (1-2) > "
-        message = _input(settings.print_question_msg(question_msg))
-        if len(message) == 0:
-          message = 1
-          break
-        elif str(message) != "1" and str(message) != "2":
-          err_msg = "Depth level '" + message + "' is not a valid answer."  
-          print(settings.print_error_msg(err_msg))
+    counter = ""
+  response = request(url, http_request_method)
+  if type(response) is not bool and response is not None:
+    if settings.SITEMAP_CHECK:
+      enable_crawler()
+    if settings.SITEMAP_CHECK is None:
+      check_sitemap()
+    if settings.SITEMAP_CHECK:
+      output_href = sitemap(url, http_request_method)
+    if not settings.SITEMAP_CHECK or (settings.SITEMAP_CHECK and output_href is None):
+      info_msg = "Starting crawler for target URL '" + url + "'" + counter + "."
+      settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+      output_href = do_process(url, http_request_method)
+      if settings.MULTI_TARGETS and settings.DEFAULT_CRAWLING_DEPTH != 1:
+        settings.DEFAULT_CRAWLING_DEPTH = 1
+      while settings.DEFAULT_CRAWLING_DEPTH <= int(menu.options.crawldepth):
+        info_msg = "Searching for usable "
+        info_msg += "links with depth " + str(settings.DEFAULT_CRAWLING_DEPTH) + "."
+        settings.print_data_to_stdout(settings.print_info_msg(info_msg))
+        if settings.DEFAULT_CRAWLING_DEPTH == 2:
+          output_href = new_crawled_hrefs
+        elif settings.DEFAULT_CRAWLING_DEPTH > 2:
+          output_href = new_crawled_hrefs + crawled_hrefs
+        try:
+          [output_href.remove(x) for x in visited_hrefs if x in output_href]
+        except TypeError:
           pass
-        else: 
-          menu.options.crawldepth = message
-          break
+        link = 0
+        if output_href is not None:
+          for url in output_href:
+            if url not in visited_hrefs and url is not None:
+              link += 1
+              settings.CRAWLED_URLS_NUM = link
+              if settings.SINGLE_WHITESPACE in url:
+                url = url.replace(settings.SINGLE_WHITESPACE, _urllib.parse.quote_plus(settings.SINGLE_WHITESPACE))
+              visited_hrefs.append(url)
+              do_process(url, http_request_method)
+              info_msg = str(link)
+              info_msg += "/" + str(len(output_href)) + " links visited."
+              settings.print_data_to_stdout(settings.END_LINE.CR + settings.print_info_msg(info_msg))
+              
+        if link != 0:
+          settings.print_data_to_stdout(settings.SINGLE_WHITESPACE)
+        settings.DEFAULT_CRAWLING_DEPTH += 1
 
-  while True:
-    if not menu.options.sitemap_url:
-      if not menu.options.batch:
-        question_msg = "Do you want to check target for "
-        question_msg += "the existence of site's sitemap(.xml)? [y/N] > "
-        message = _input(settings.print_question_msg(question_msg))
-      else:
-        message = ""
-      if len(message) == 0:
-         message = "n"
-      if message in settings.CHOICE_YES:
-        sitemap_check = True
-        break
-      elif message in settings.CHOICE_NO:
-        sitemap_check = False
-        break
-      elif message in settings.CHOICE_QUIT:
-        raise SystemExit()
-      else:
-        err_msg = "'" + message + "' is not a valid answer."  
-        print(settings.print_error_msg(err_msg))
-        pass
-    else:
-      sitemap_check = True
-      break
-  
-  if sitemap_check:
-    output_href = sitemap(url)
-    if output_href is None :
-      sitemap_check = False
-
-  info_msg = "Checking "
-  if sitemap_check:
-    info_msg += "identified 'sitemap.xml' "
-  info_msg += "for usable links (with GET parameters). "
-  sys.stdout.write("\r" + settings.print_info_msg(info_msg))
-  sys.stdout.flush()
-
-  if not sitemap_check:
-    output_href = do_process(url)
-    if menu.options.crawldepth > 1:
-      for url in output_href:
-        output_href = do_process(url)
-  if SKIPPED_URLS == 0:
-    print(settings.SINGLE_WHITESPACE)
-
-  if not settings.VERBOSITY_LEVEL >= 2:
-    print("")
-  info_msg = "Visited " + str(len(output_href)) + " link"+ "s"[len(output_href) == 1:] + "."
-  print(settings.print_info_msg(info_msg))
-  filename = store_crawling()
-  valid_url_found = False
-  try:
-    url_num = 0
-    valid_urls = []
-    for check_url in output_href:
-      if re.search(r"(.*?)\?(.+)", check_url):
-        valid_url_found = True
-        url_num += 1
-        print(settings.print_info_msg("URL #" + str(url_num) + " - " + check_url) + "")
-        if filename is not None:
-          with open(filename, "a") as crawling_results:
-            crawling_results.write(check_url + "\n")
-        if not menu.options.batch:
-          question_msg = "Do you want to use URL #" + str(url_num) + " to perform tests? [Y/n] > "
-          message = _input(settings.print_question_msg(question_msg))
-        else:
-          message = ""
-        if len(message) == 0:
-           message = "Y"
-        if message in settings.CHOICE_YES:
-          return check_url
-        elif message in settings.CHOICE_NO:
-          if settings.VERBOSITY_LEVEL != 0:
-            debug_msg = "Skipping '" + check_url + "'.\n"
-            sys.stdout.write(settings.print_debug_msg(debug_msg))
-          pass 
-        elif message in settings.CHOICE_QUIT:
-          raise SystemExit()
-    raise SystemExit()
-  except TypeError:
-    pass
-  if not valid_url_found:
-    print(settings.SINGLE_WHITESPACE)
-  raise SystemExit()
+  output_href = crawled_hrefs
+  no_usable_links(output_href)
+  return output_href
 
 # eof
